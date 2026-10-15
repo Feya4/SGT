@@ -134,23 +134,6 @@ python profile_graphs.py --dataset bracs --checkpoint checkpoints/sgt_bracs_s0/b
 
 This reports the number of nodes and edges per graph, the parameter count, peak GPU memory, latency at batch size 1 and throughput. Data loading and feature extraction are not included. *Note: this script imports `load_model` from `eval_bach.py`, which is not yet included.*
 
-## Hyper-parameters
-
-| | BRACS | ISIC 2018 | CAMELYON16 |
-|---|---|---|---|
-| Layers / heads / hidden / FFN | 6 / 8 / 256 / 512 | same | same |
-| Morph. MLP width, β init | 64, 1.0 | same | same |
-| Dropout / classifier width | 0.1 / 64 | 0.5 / 128 | 0.1 / 128 |
-| Stochastic depth | linear 0 → 0.15, per graph | same | same |
-| Optimiser | AdamW, lr 5e-5, wd 1e-4 | AdamW, lr 3e-5, wd 5e-4 | AdamW, lr 1e-4, wd 1e-4 |
-| Batch / epochs / warm-up / patience | 16 / 200 / 10 / 30 | 16 / 200 / 10 / 30 | 32 / 100 / 5 / 20 |
-| Loss | focal (γ = 2) | CE + label smoothing 0.1 | focal (γ = 2) + class weights |
-| Class imbalance | weighted sampling | weighted sampling | weighted sampling |
-| Augmentation | none | feature noise σ 0.02, edge dropout 0.10 | none |
-| Parameters | 4.90 M | 4.92 M | – |
-
-All runs use cosine decay to 1e-6 after a linear warm-up and gradient clipping at 1.0.
-
 ## Reproducing runs made with the pre-revision code
 
 The implementation was revised in October 2026 to match the manuscript exactly:
