@@ -1,23 +1,3 @@
-"""
-model.py - Structural-Morphology-Aware Graph Transformer (SGT).
-
-Equation numbers refer to the manuscript (Methods, Section 0.5):
-
-  MorphologicalTokenInit      Eq. (4)      m_i^(0) = W2 ReLU(W1 mu_i + b1) + b2,   mu_i = [d_i, s~_i, c_i]
-  MASEPropagation             Eq. (5)      m_i^(l) = LN(W_self m_i^(l-1) + W_agg mean_{j in N(i)} m_j^(l-1))
-  GatedCrossStreamFusion      Eqs. (6-7)   g_i = sigma(W_gate [h_i^(l-1) || m_i^(l-1)]),  h_in = h^(l-1) + g ⊙ m^(l-1)
-  SpatialRelationshipEncoder  Eq. (8)      phi_ij = 1 / (1 + ||p_i - p_j||^2),  bias = beta * phi_ij
-  SREMultiHeadAttention       Eqs. (9-11)  alpha_ij = softmax_{j in N(i)}(q_i^T k_j / sqrt(d_k) + beta phi_ij)
-  SGTLayer                    Eqs. (12-15) and Algorithm 1, lines 7-16
-  SGT                         Eqs. (2, 16, 17)
-
-Switches (ModelConfig) — defaults implement the manuscript exactly:
-  fuse_prev_morph      True : gate/fusion use m^(l-1) (Eqs. 6-7, Alg. 1 lines 9-10).
-                       False: gate/fusion use m^(l)   (behaviour of the code before this revision).
-  drop_path_per_graph  True : stochastic depth drops a residual branch for a whole graph.
-                       False: one Bernoulli draw per NODE (behaviour before this revision).
-  use_mase / use_sre   ablations; False removes the morphological stream / the spatial bias.
-"""
 
 import math
 from typing import Dict, Optional, Tuple
