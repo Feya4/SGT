@@ -1,176 +1,218 @@
 """
-utils.py - seeding, logging, losses, class/sample weights, control experiments, metrics.
+train.py - train and evaluate SGT on BRACS, ISIC 2018 (and CAMELYON16 once its loader is added).
+
+   
 """
-import logging
+import argparse
+import json
+import multiprocessing as mp
 import os
-import random
-from typing import List, Optional
+import sys
+import time
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from config import apply_overrides, get_config
+from dataset import build_dataloaders
+from model import build_model
+from utils import (apply_controls, build_criterion, check_compatible, compute_metrics, get_device, get_logger,
+                   set_seed)
 
 
-# ─── Reproducibility / environment ───────────────────────────────────────────
-
-def set_seed(seed: int = 0):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+def get_targets(batch, num_classes):
+    t = batch.y.view(-1)
+    if t.min().item() < 0 or t.max().item() >= num_classes:
+        raise ValueError(f"Invalid labels in batch: {t.unique().tolist()}")
+    return t
 
 
-def get_device(device_str: str = "auto") -> torch.device:
-    if device_str == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(device_str)
+def train_epoch(model, loader, optimizer, criterion, device, cfg):
+    model.train()
+    t, losses = cfg.train, []
+    for batch in loader:
+        batch = apply_controls(batch.to(device), cfg.morph_mode, cfg.pos_mode)
+        targets = get_targets(batch, cfg.model.num_classes)
+        if t.feat_noise_std > 0:                                   # graph augmentation (training only)
+            batch.x = batch.x + torch.randn_like(batch.x) * t.feat_noise_std
+        if t.edge_drop_p > 0 and batch.edge_index.size(1) > 0:
+            keep = torch.rand(batch.edge_index.size(1), device=device) > t.edge_drop_p
+            if keep.sum() > 0:
+                batch.edge_index = batch.edge_index[:, keep]
+        optimizer.zero_grad()
+        loss = criterion(model(batch), targets)
+        loss.backward()
+        if t.grad_clip > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), t.grad_clip)
+        optimizer.step()
+        losses.append(loss.item())
+    return float(np.mean(losses))
 
 
-def get_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
-    logger = logging.getLogger(name)
-    if logger.handlers:
-        return logger
-    logger.setLevel(logging.INFO)
-    fmt = logging.Formatter("[%(asctime)s][%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
-    if log_file:
-        os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
-        fh = logging.FileHandler(log_file)
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-    return logger
+@torch.no_grad()
+def predict(model, loader, criterion, device, cfg):
+    """(labels, softmax probabilities, mean loss) in dataset order."""
+    model.eval()
+    ys, ps, losses = [], [], []
+    for batch in loader:
+        batch = apply_controls(batch.to(device), cfg.morph_mode, cfg.pos_mode)
+        targets = get_targets(batch, cfg.model.num_classes)
+        logits = model(batch)
+        losses.append(criterion(logits, targets).item())
+        ps.append(F.softmax(logits, -1).cpu())
+        ys.append(targets.cpu())
+    y, p = torch.cat(ys).numpy(), torch.cat(ps).numpy()
+    if len(y) != len(loader.dataset):
+        raise RuntimeError(f"evaluated {len(y)} graphs, dataset has {len(loader.dataset)}")
+    return y, p, float(np.mean(losses))
 
 
-# ─── Losses ──────────────────────────────────────────────────────────────────
-
-class FocalLoss(nn.Module):
-    """Multi-class focal loss  FL = (1 - p_t)^gamma * CE   (gamma = 0 gives cross-entropy)."""
-
-    def __init__(self, gamma: float = 2.0, weight: Optional[torch.Tensor] = None):
-        super().__init__()
-        self.gamma = gamma
-        if weight is not None:
-            self.register_buffer("weight", weight)
-        else:
-            self.weight = None
-
-    def forward(self, logits, targets):
-        ce = F.cross_entropy(logits, targets, weight=self.weight, reduction="none")
-        p_t = F.softmax(logits, dim=1).gather(1, targets.unsqueeze(1)).squeeze(1)
-        return ((1.0 - p_t) ** self.gamma * ce).mean()
+def save_predictions(path, ds, y, probs, class_names):
+    ids = ds.get_ids()
+    assert len(ids) == len(y), "prediction order does not match dataset order"
+    np.savez(path, sample_id=np.array(ids), y_true=y, y_pred=probs.argmax(1), probs=probs,
+             classes=np.array(class_names))
 
 
-class LabelSmoothingCrossEntropy(nn.Module):
-    def __init__(self, smoothing: float = 0.1):
-        super().__init__()
-        self.smoothing = smoothing
+def main(cfg, resume=False, test_only=False):
+    cfg.validate()
+    set_seed(cfg.seed)
+    device = get_device("auto")
+    exp_dir = Path(cfg.output_dir) / cfg.exp_name
+    rep_dir = exp_dir / "report"
+    ckpt_dir = Path(cfg.checkpoint_dir) / cfg.exp_name
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    logger = get_logger("SGT", str(exp_dir / "train.log"))
+    names, t = cfg.class_names, cfg.train
 
-    def forward(self, logits, targets):
-        logp = F.log_softmax(logits, dim=-1)
-        nll = -logp.gather(dim=-1, index=targets.unsqueeze(1)).squeeze(1)
-        smooth = -logp.mean(dim=-1)
-        return ((1.0 - self.smoothing) * nll + self.smoothing * smooth).mean()
+    logger.info("=" * 65)
+    logger.info(f"SGT {cfg.dataset} | seed={cfg.seed} | morph={cfg.morph_mode} | pos={cfg.pos_mode} | device={device}")
 
+    train_loader, val_loader, test_loader = build_dataloaders(cfg)
+    sizes = {k: len(l.dataset) for k, l in (("train", train_loader), ("val", val_loader), ("test", test_loader))}
+    logger.info(f"split sizes: {sizes}")
 
-def build_criterion(tcfg, labels: List[int], num_classes: int, device) -> (nn.Module, str):
-    """Loss from TrainConfig; returns (criterion, human-readable description)."""
-    w = compute_class_weights(labels, num_classes, device) if tcfg.class_weights else None
-    if tcfg.loss == "focal":
-        crit, name = FocalLoss(tcfg.focal_gamma, w), f"focal loss (gamma={tcfg.focal_gamma})"
-    elif tcfg.loss == "ce":
-        crit, name = nn.CrossEntropyLoss(weight=w), "cross-entropy"
-    else:
-        if w is not None:
-            raise ValueError("class_weights are not supported with the label-smoothing loss")
-        crit, name = LabelSmoothingCrossEntropy(tcfg.label_smoothing), f"label-smoothing CE (eps={tcfg.label_smoothing})"
-    name += f", class weights {'on' if w is not None else 'off'}, weighted sampling {'on' if tcfg.weighted_sampling else 'off'}"
-    return crit.to(device), name
+    model = build_model(cfg.model).to(device)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"parameters: {n_params:,}")
+    criterion, loss_name = build_criterion(t, train_loader.dataset.get_labels(), cfg.model.num_classes, device)
+    logger.info(f"loss: {loss_name}")
 
+    optimizer = AdamW(model.parameters(), lr=t.lr, weight_decay=t.weight_decay)
+    warm = LinearLR(optimizer, start_factor=0.1, total_iters=t.warmup_epochs)
+    cos = CosineAnnealingLR(optimizer, T_max=max(t.epochs - t.warmup_epochs, 1), eta_min=t.lr_min)
 
-# ─── Class / sample weights (labels are validated, never clamped) ────────────
+    best_pt, last_pt = ckpt_dir / "best.pt", ckpt_dir / "latest.pt"
+    start_epoch, best_f1, best_epoch, no_improve = 1, -1.0, 0, 0
+    if resume and last_pt.exists():
+        s = torch.load(last_pt, map_location=device, weights_only=False)
+        model.load_state_dict(s["model"]); optimizer.load_state_dict(s["optimizer"])
+        warm.load_state_dict(s["warm"]); cos.load_state_dict(s["cos"])
+        start_epoch, best_f1, best_epoch, no_improve = s["epoch"] + 1, s["best_f1"], s["best_epoch"], s["no_improve"]
+        logger.info(f"resumed after epoch {s['epoch']} (best val wF1 {best_f1:.4f} @ {best_epoch})")
 
-def _check_labels(labels, num_classes):
-    bad = sorted({int(l) for l in labels if not 0 <= int(l) < num_classes})
-    if bad:
-        raise ValueError(f"labels outside [0, {num_classes}): {bad}")
+    if not test_only:
+        for epoch in range(start_epoch, t.epochs + 1):
+            t0 = time.time()
+            tr_loss = train_epoch(model, train_loader, optimizer, criterion, device, cfg)
+            (warm if epoch <= t.warmup_epochs else cos).step()
+            y_v, p_v, v_loss = predict(model, val_loader, criterion, device, cfg)
+            vm = compute_metrics(y_v, p_v, names)
+            improved = vm["weighted_f1"] > best_f1 + 1e-5
+            if improved:
+                best_f1, best_epoch, no_improve = vm["weighted_f1"], epoch, 0
+                torch.save({"epoch": epoch, "model": model.state_dict(), "val_weighted_f1": best_f1,
+                            "config": cfg.to_dict()}, best_pt)
+            else:
+                no_improve += 1
+            torch.save({"epoch": epoch, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                        "warm": warm.state_dict(), "cos": cos.state_dict(), "best_f1": best_f1,
+                        "best_epoch": best_epoch, "no_improve": no_improve}, last_pt)
+            logger.info(f"Epoch {epoch:03d}/{t.epochs} | lr={optimizer.param_groups[0]['lr']:.2e} | "
+                        f"{time.time() - t0:.1f}s | train loss={tr_loss:.4f} | val loss={v_loss:.4f} "
+                        f"wF1={vm['weighted_f1']:.4f} mF1={vm['macro_f1']:.4f} acc={vm['accuracy']:.4f} "
+                        f"AUC={vm['auc_macro_ovr']:.4f} [best={best_f1:.4f} @ {best_epoch}]" + ("  *" if improved else ""))
+            if no_improve >= t.patience:
+                logger.info(f"early stop at epoch {epoch} (patience {t.patience})")
+                break
 
+    # ── final evaluation: best validation checkpoint, test split used once ──
+    if not best_pt.exists():
+        raise FileNotFoundError(f"{best_pt} not found - train first, or check --exp_name")
+    ck = torch.load(best_pt, map_location=device, weights_only=False)
+    check_compatible(ck, cfg)                 # e.g. a pre-revision checkpoint evaluated with new settings
+    model.load_state_dict(ck["model"])
+    best_epoch = ck["epoch"]
+    y_v, p_v, _ = predict(model, val_loader, criterion, device, cfg)
+    y_t, p_t, _ = predict(model, test_loader, criterion, device, cfg)
+    save_predictions(rep_dir / "val_predictions.npz", val_loader.dataset, y_v, p_v, names)
+    save_predictions(rep_dir / "test_predictions.npz", test_loader.dataset, y_t, p_t, names)
+    vm, tm = compute_metrics(y_v, p_v, names), compute_metrics(y_t, p_t, names)
 
-def compute_class_weights(labels: List[int], num_classes: int, device) -> torch.Tensor:
-    """Inverse-frequency weights  w_c = N / (K * n_c)."""
-    _check_labels(labels, num_classes)
-    counts = torch.zeros(num_classes)
-    for l in labels:
-        counts[int(l)] += 1
-    return (len(labels) / (num_classes * counts.clamp(min=1))).to(device)
+    logger.info("=" * 65)
+    logger.info(f"TEST (best val epoch {best_epoch}) | wF1={tm['weighted_f1']:.4f} mF1={tm['macro_f1']:.4f} "
+                f"acc={tm['accuracy']:.4f} AUC={tm['auc_macro_ovr']:.4f}")
+    logger.info("\n" + tm["report"])
 
-
-def compute_sample_weights(labels: List[int], num_classes: int) -> List[float]:
-    """Per-sample weights 1/n_c for WeightedRandomSampler."""
-    _check_labels(labels, num_classes)
-    counts = [0] * num_classes
-    for l in labels:
-        counts[int(l)] += 1
-    return [1.0 / counts[int(l)] for l in labels]
-
-
-# ─── Control experiments (Editor comment 5) ──────────────────────────────────
-
-def _permute_within_graph(t, batch):
-    """Random permutation of the rows of t, separately inside every graph of the batch."""
-    key = batch.double() + torch.rand(t.size(0), device=t.device, dtype=torch.double)
-    return t[torch.argsort(key)]
-
-
-def apply_controls(batch, morph_mode: str = "real", pos_mode: str = "real"):
-    """Applied identically in training and evaluation.
-
-    morph_mode  real | shuffle (rows permuted within each graph) | degree (area, convexity = 0) | none (all 0)
-                NOTE: "none" feeds zeros to MASE (the stream still exists); to REMOVE MASE use model.use_mase=false
-    pos_mode    real | shuffle (centroids permuted within each graph)
-    """
-    if morph_mode == "shuffle":
-        batch.morph = _permute_within_graph(batch.morph, batch.batch)
-    elif morph_mode == "degree":
-        batch.morph = batch.morph.clone()
-        batch.morph[:, 1:] = 0.0
-    elif morph_mode == "none":
-        batch.morph = torch.zeros_like(batch.morph)
-    if pos_mode == "shuffle":
-        batch.pos = _permute_within_graph(batch.pos, batch.batch)
-    return batch
-
-
-# ─── Metrics ─────────────────────────────────────────────────────────────────
-
-def compute_metrics(y: np.ndarray, probs: np.ndarray, class_names: List[str]) -> dict:
-    """accuracy, weighted/macro F1, macro one-vs-rest AUC, per-class P/R/F1/AUC, confusion matrix (sklearn)."""
-    from sklearn.metrics import (accuracy_score, classification_report, confusion_matrix, f1_score,
-                                 precision_recall_fscore_support, roc_auc_score)
-    labels = list(range(len(class_names)))
-    pred = probs.argmax(1)
-    p, r, f, s = precision_recall_fscore_support(y, pred, labels=labels, zero_division=0)
-    per_auc = []
-    for c in labels:
-        yc = (y == c).astype(int)
-        per_auc.append(float(roc_auc_score(yc, probs[:, c])) if 0 < yc.sum() < len(yc) else float("nan"))
-    try:
-        auc = float(roc_auc_score(y, probs, multi_class="ovr", average="macro", labels=labels))
-    except ValueError:
-        auc = float("nan")
-    return {
-        "n": int(len(y)),
-        "accuracy": float(accuracy_score(y, pred)),
-        "weighted_f1": float(f1_score(y, pred, average="weighted", zero_division=0)),
-        "macro_f1": float(f1_score(y, pred, average="macro", zero_division=0)),
-        "auc_macro_ovr": auc,
-        "per_class": {class_names[c]: {"precision": float(p[c]), "recall": float(r[c]), "f1": float(f[c]),
-                                       "auc_ovr": per_auc[c], "support": int(s[c])} for c in labels},
-        "confusion_matrix": confusion_matrix(y, pred, labels=labels).tolist(),
-        "report": classification_report(y, pred, labels=labels, target_names=class_names,
-                                        digits=4, zero_division=0),
+    report = {
+        "dataset": cfg.dataset, "seed": cfg.seed, "split_sizes": sizes, "best_epoch": int(best_epoch),
+        "controls": {"morph_mode": cfg.morph_mode, "pos_mode": cfg.pos_mode},
+        "loss": loss_name, "n_params": n_params,
+        "metric_definitions": {
+            "weighted_f1": "sklearn f1_score(average='weighted')",
+            "macro_f1": "sklearn f1_score(average='macro')",
+            "auc_macro_ovr": "sklearn roc_auc_score(multi_class='ovr', average='macro')",
+            "model_selection": "checkpoint with highest validation weighted F1"},
+        "validation": {k: v for k, v in vm.items() if k != "report"},
+        "test": {k: v for k, v in tm.items() if k != "report"},
+        "config": cfg.to_dict(),
     }
+    json.dump(report, open(rep_dir / "test_report.json", "w"), indent=2)
+    logger.info(f"report and predictions: {rep_dir}")
+    return tm
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Train / evaluate SGT",
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument("--dataset", choices=["bracs", "isic", "camelyon16"], required=True)
+    p.add_argument("--exp_name", default=None)
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--patience", type=int, default=None)
+    p.add_argument("--morph_mode", choices=["real", "shuffle", "degree", "none"], default=None,
+                   help="control experiment on the morphological attributes")
+    p.add_argument("--pos_mode", choices=["real", "shuffle"], default=None,
+                   help="control experiment on the node positions")
+    p.add_argument("--set", nargs="*", default=[], metavar="NAME=VALUE",
+                   help="override any config field, e.g. train.lr=1e-4 model.dropout=0.2")
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--test_only", action="store_true", help="skip training, evaluate best.pt")
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    a = parse_args()
+    cfg = get_config(a.dataset)
+    for name in ("exp_name", "seed", "morph_mode", "pos_mode"):
+        if getattr(a, name) is not None:
+            setattr(cfg, name, getattr(a, name))
+    if a.epochs is not None:
+        cfg.train.epochs = a.epochs
+    if a.patience is not None:
+        cfg.train.patience = a.patience
+    apply_overrides(cfg, a.set)
+    if cfg.dataset == "isic":                       # graph building uses CUDA in the main process
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
+    main(cfg, resume=a.resume, test_only=a.test_only)
