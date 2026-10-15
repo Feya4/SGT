@@ -15,13 +15,24 @@ SGT classifies histopathology (and dermoscopy) images from their tissue graphs. 
 
 ```
 sgt-pathology/
-├── train.py              # training + single final test evaluation
-├── profile_graphs.py     # graph sizes, parameters, GPU memory, latency
-├── config/config.py      # all hyper-parameters and paths (presets per dataset)
-├── dataset/dataset.py    # BRACS and ISIC 2018 graph datasets, data loaders
-├── model/model.py        # SGT: MASE, gated fusion, SRE attention, classifier
-├── utils/utils.py        # seeding, losses, sampling weights, control experiments, metrics
-└── data/                 # datasets only (not code), see below
+├── train.py                  # training + single final test evaluation
+├── profile_graphs.py         # graph sizes, parameters, GPU memory, latency
+├── config/config.py          # all hyper-parameters and paths (presets per dataset)
+├── dataset/dataset.py        # BRACS and ISIC 2018 graph datasets, data loaders
+├── model/model.py            # SGT: MASE, gated fusion, SRE attention, classifier
+├── utils/utils.py            # seeding, losses, sampling weights, control experiments, metrics
+├── utils/checkpoint.py       # rebuild model + config from a checkpoint
+├── preprocessing/            # graph construction and data splits (run once, in the order below)
+│   ├── organize_bracs_official.py
+│   ├── build_bracs_graphs.py
+│   ├── compute_morphology.py
+│   ├── make_isic_lesion_split.py
+│   ├── inspect_pairs.py
+│   └── preprocess_isic.py
+├── extra/bach/               # optional BACH graphs (not part of the paper)
+├── assets/target.png         # stain-normalisation target (add it, see assets/README.md)
+├── splits/                   # isic2018_lesion_split.csv
+└── data/                     # datasets only (not code, not committed)
 ```
 
 Each code folder has an `__init__.py`, so imports such as `from config import get_config` work unchanged. Run all commands from the `sgt-pathology/` folder.
@@ -34,8 +45,11 @@ conda create -n sgt python=3.10 -y && conda activate sgt
 pip install torch torchvision
 pip install torch_geometric torch_scatter          # torch_scatter must match your torch/CUDA build
 pip install dgl                                    # reads the BRACS tissue graphs (.bin)
-pip install numpy scikit-learn scikit-image opencv-python pillow
+pip install numpy pandas scikit-learn scikit-image opencv-python pillow imagehash
+pip install histocartography                       # preprocessing of BRACS only
 ```
+
+(or `pip install -r requirements.txt` after installing PyTorch).
 
 Experiments in the paper were run on NVIDIA A40 GPUs.
 
@@ -45,36 +59,62 @@ All paths are relative to the environment variable `SGT_ROOT`, which defaults to
 
 ### BRACS (7 classes: N, PB, UDH, ADH, FEA, DCIS, IC)
 
-1. Download BRACS and its official HACT tissue graphs from <https://www.bracs.icar.cnr.it/>.
-2. Add the node fields `area` and `solidity` (convexity) to every graph with `preprocessing/compute_morphology.py` (not yet included in this repository).
-3. Arrange the folders as follows:
+Download the BRACS ROI images (<https://www.bracs.icar.cnr.it/>) into `data/{train,val,test}/<class>/`, keeping the official folder structure, which defines the patient-level split. Then run:
+
+```bash
+# 1. copy existing tissue graphs into folders that follow the official split; audit slide overlap
+python preprocessing/organize_bracs_official.py --dry_run
+python preprocessing/organize_bracs_official.py        # -> data/tissue_graphs_official/, missing_graphs_*.txt
+
+# 2. build graphs for ROIs that have none (HACT pipeline: Vahadane + merged SLIC + ResNet-34 + RAG)
+python preprocessing/build_bracs_graphs.py --verify 5  # rebuild 5 existing graphs, should be identical
+python preprocessing/build_bracs_graphs.py --split test
+
+# 3. add region area and convexity (solidity) to every node
+python preprocessing/compute_morphology.py --check 5
+python preprocessing/compute_morphology.py --workers 8 # -> data/tissue_graphs_official_morph/
+```
+
+The resulting layout is:
 
 ```
-data/tissue_graphs_official_morph/{train,val,test}_official/BRACS_*.bin
-data/BRACS_RoI/...  /BRACS_*.png       # ROI images; only width/height are read
+data/{train,val,test}/<class>/.../BRACS_*.png                  # ROI images
+data/tissue_graphs_official_morph/{train,val,test}_official/   # graphs used for training
 ```
 
-The ROI sizes are needed to normalise the node centroids to [0, 1] by the longer ROI side. They are read once from the image headers and cached in `roi_image_sizes.json`.
-
-We use the official patient-level split. Eight training ROIs (7 UDH, 1 IC) were unavailable in our copy, so training uses 3,155 ROIs; validation (602) and test (626) are complete.
+- Node features are 512-d ResNet-34 features; the two location features of the RAG builder are dropped.
+- `compute_morphology.py` checks that every region matches a graph node (same count, centroids within 2 px) and that the features are 512-dimensional. It lists any graph that fails in `morphology_problems.txt`.
+- The ROI sizes needed to normalise centroids to [0, 1] are read from the image headers once and cached in `roi_image_sizes.json`.
+- Eight training ROIs (7 UDH, 1 IC) were unavailable in our copy, so training uses 3,155 ROIs; validation (602) and test (626) are complete.
 
 ### ISIC 2018 Task 3 / HAM10000 (7 classes: MEL, NV, BCC, AKIEC, BKL, DF, VASC)
 
 ```
 data/ISIC2018_Task3_Training_Input/*.jpg
 data/ISIC2018_Task3_Training_GroundTruth/ISIC2018_Task3_Training_GroundTruth.csv
-splits/isic2018_lesion_split.csv           # columns: image, split (train/val/test)
 ```
 
-The split is at the lesion level (70/15/15, stratified by diagnosis, seed 42), and near-duplicate images (perceptual hash, Hamming distance ≤ 2) are kept in the same partition.
+```bash
+# lesion-level 70/15/15 split, stratified by diagnosis, seed 42; near-duplicates (pHash Hamming <= 2) grouped
+python preprocessing/make_isic_lesion_split.py \
+    --gt     data/ISIC2018_Task3_Training_GroundTruth/ISIC2018_Task3_Training_GroundTruth.csv \
+    --groups data/ISIC2018_Task3_Training_LesionGroupings.csv \
+    --img_dir data/ISIC2018_Task3_Training_Input          # -> splits/isic2018_lesion_split.csv
+
+# optional: review candidate pairs to choose the threshold
+python preprocessing/inspect_pairs.py --img_dir data/ISIC2018_Task3_Training_Input
+
+# build and cache all graphs (GPU recommended) -> data/graph_cache/isic/
+python preprocessing/preprocess_isic.py
+```
 
 Each image is turned into a graph as follows:
 
-1. The image is resized to 224×224 and segmented into about 75 SLIC superpixels.
-2. Each superpixel is described by ResNet-50 features of a 64×64 crop, reduced to 512 dimensions by a fixed random projection (seed 42).
-3. Superpixels are connected in a 6-nearest-neighbour graph.
+1. The image is resized to 224×224 and segmented into about 75 SLIC superpixels (compactness 10).
+2. Each superpixel becomes a node, described by ImageNet ResNet-50 features of a 64×64 crop at its centroid, reduced to 512 dimensions by one fixed random projection (seed 42).
+3. Nodes are connected in an undirected 6-nearest-neighbour graph.
 
-Graphs are cached in `data/graph_cache/isic/`. Build them beforehand with `preprocessing/preprocess_isic.py` (not yet included), because DataLoader workers cannot use the GPU.
+Graphs must be cached before training, because DataLoader workers cannot use the GPU.
 
 ### CAMELYON16 (2 classes: normal, tumor)
 
@@ -132,7 +172,8 @@ python train.py --dataset bracs --exp_name ctl_pos     --pos_mode shuffle       
 python profile_graphs.py --dataset bracs --checkpoint checkpoints/sgt_bracs_s0/best.pt
 ```
 
-This reports the number of nodes and edges per graph, the parameter count, peak GPU memory, latency at batch size 1 and throughput. Data loading and feature extraction are not included. *Note: this script imports `load_model` from `eval_bach.py`, which is not yet included.*
+This reports the number of nodes and edges per graph, the parameter count, peak GPU memory, latency at batch size 1 and throughput. Data loading and feature extraction are not included.
+
 
 ## Reproducing runs made with the pre-revision code
 
@@ -143,7 +184,11 @@ The implementation was revised in October 2026 to match the manuscript exactly:
 - BRACS centroids are normalised by the ROI side;
 - BRACS area is normalised by the maximum area in the graph.
 
-To reproduce or re-evaluate checkpoints trained with the earlier code, add:
+Checkpoints store the configuration they were trained with:
+
+- `utils.load_model` and `profile_graphs.py` recognise checkpoints from the earlier code and rebuild them with the earlier settings automatically.
+- `train.py --test_only` refuses to evaluate a checkpoint with different settings, and prints the `--set` values to use.
+- To train or evaluate with the earlier behaviour, add:
 
 ```bash
 --set model.fuse_prev_morph=false model.drop_path_per_graph=false data.bracs_pos=mm data.bracs_area=zlog
@@ -178,4 +223,4 @@ For BRACS, the SGT−CGT difference is +0.94 percentage points (95% CI 0.33–1.
 
 ## Contact
 
-Feidu Akmel (feiduakmel4@gmail.com) or Xun Gong (xgong@swjtu.edu.cn).
+Feidu Akmel (feiduakmel@gmail.com) or Xun Gong (xgong@swjtu.edu.cn).
