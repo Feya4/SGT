@@ -223,4 +223,4 @@ For BRACS, the SGT−CGT difference is +0.94 percentage points (95% CI 0.33–1.
 
 ## Contact
 
-Feidu Akmel (feiduakmel@gmail.com) or Xun Gong (xgong@swjtu.edu.cn).
+Feidu Akmel (feiduakmel4@gmail.com) or Xun Gong (xgong@swjtu.edu.cn).
