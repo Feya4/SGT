@@ -29,9 +29,6 @@ sgt-pathology/
 │   ├── make_isic_lesion_split.py
 │   ├── inspect_pairs.py
 │   └── preprocess_isic.py
-├── extra/bach/               # optional BACH graphs (not part of the paper)
-├── assets/target.png         # stain-normalisation target (add it, see assets/README.md)
-├── splits/                   # isic2018_lesion_split.csv
 └── data/                     # datasets only (not code, not committed)
 ```
 
