@@ -1,17 +1,4 @@
-"""
-config.py - every hyper-parameter and path of the SGT experiments in one place.
 
-Three presets, selected by dataset name:
-
-    cfg = get_config("bracs")       # BRACS 7-class subtyping
-    cfg = get_config("isic")        # ISIC 2018 Task 3, 7-class dermoscopy
-    cfg = get_config("camelyon16")  # CAMELYON16, normal vs tumor (training settings only, see dataset.py)
-
-Presets follow the manuscript (Implementation Details, Section 0.7). Any value can be
-overridden from the command line of train.py (see --set).
-
-All paths are relative to the environment variable SGT_ROOT (default: current folder).
-"""
 import os
 from dataclasses import dataclass, field, fields, asdict
 
@@ -68,7 +55,7 @@ class TrainConfig:
 class DataConfig:
     # BRACS: folders with the official-split graphs (written by preprocessing/compute_morphology.py)
     bracs_dir: str = f"{ROOT}/data/tissue_graphs_official_morph"
-    bracs_image_dir: str = f"{ROOT}/data/BRACS_RoI"   # ROI images; only their width/height are read
+    bracs_image_dir: str = f"{ROOT}/data"     # ROI images data/{train,val,test}/<class>/BRACS_*.png; only width/height read
     bracs_pos: str = "normalised"     # "normalised": centroid / longer ROI side (manuscript) | "mm" (pre-revision)
     bracs_area: str = "max"           # "max": area / max area in the graph (manuscript) | "zlog" (pre-revision)
     # ISIC 2018
