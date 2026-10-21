@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+data/
+checkpoints/
+outputs/
+figures/
+pair_review/
+*.log
+morphology_problems.txt
+morphology_notes.txt
+build_bracs_graphs_*_log.txt
+build_bach_log_part*.txt
+missing_graphs_*.txt
+old_folder_leakage.csv
+bracs_official_membership.csv
