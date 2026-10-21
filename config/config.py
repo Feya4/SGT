@@ -1,4 +1,17 @@
+"""
+config.py - every hyper-parameter and path of the SGT experiments in one place.
 
+Three presets, selected by dataset name:
+
+    cfg = get_config("bracs")       # BRACS 7-class subtyping
+    cfg = get_config("isic")        # ISIC 2018 Task 3, 7-class dermoscopy
+    cfg = get_config("camelyon16")  # CAMELYON16, normal vs tumor (training settings only, see dataset.py)
+
+Presets follow the manuscript (Implementation Details, Section 0.7). Any value can be
+overridden from the command line of train.py (see --set).
+
+All paths are relative to the environment variable SGT_ROOT (default: current folder).
+"""
 import os
 from dataclasses import dataclass, field, fields, asdict
 
@@ -29,6 +42,8 @@ class ModelConfig:
     drop_path_per_graph: bool = True  # stochastic depth per graph; False: per node
     use_mase: bool = True             # ablation: False removes the morphological stream
     use_sre: bool = True              # ablation: False removes the spatial bias
+    variant: str = "sgt"              # "sgt" | "concat": morphology concatenated to node features, no MASE (control)
+    match_params: bool = True         # concat only: widen the FFN so the parameter count matches SGT
 
 
 @dataclass
@@ -95,6 +110,7 @@ class Config:
         assert self.data.bracs_pos in ("normalised", "mm")
         assert self.data.bracs_area in ("max", "zlog")
         assert 0.0 <= self.model.drop_path_max < 1.0
+        assert self.model.variant in ("sgt", "concat")
         return self
 
     def to_dict(self):

@@ -1,6 +1,23 @@
 """
 profile_graphs.py - graph-size distribution, parameter count, GPU memory and inference latency of SGT.
 
+Measured on the TEST split of the chosen dataset with a trained checkpoint (or random weights with --no_checkpoint;
+memory and latency do not depend on the weights).
+
+  * graph size : nodes / edges per graph (mean, SD, median, IQR, min, max), overall and per class
+  * latency    : milliseconds per graph, batch size 1, after warm-up, torch.cuda.synchronize() around every call;
+                 mean, SD, median, 95th percentile over all test graphs (data already in memory, so loading and
+                 feature extraction are NOT included - state this in the paper)
+  * throughput : graphs per second at --batch_size (default 16), same protocol
+  * memory     : peak GPU memory (torch.cuda.max_memory_allocated) during inference, at batch size 1 (largest graph
+                 and mean over graphs) and at --batch_size
+  * parameters : trainable parameters
+
+Example
+  python profile_graphs.py --dataset bracs --checkpoint $SGT_ROOT/checkpoints/sgt200_bracs_s0/best.pt
+  python profile_graphs.py --dataset isic  --checkpoint .../best.pt --set data.isic_image_dir=... (as train.py)
+Writes <out>/profile_<dataset>.json and prints a table. Report the GPU model printed in the header; other users'
+jobs on the same GPU change latency, so run it when the GPU is idle.
 """
 import argparse
 import json

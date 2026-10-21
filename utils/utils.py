@@ -30,9 +30,13 @@ def get_device(device_str: str = "auto") -> torch.device:
 
 
 def get_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
+    """Logger writing to the console and to log_file. Handlers are replaced on every call, so that several
+    runs in one process (run_controls.py) each log to their own file."""
     logger = logging.getLogger(name)
-    if logger.handlers:
-        return logger
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+        h.close()
+    logger.propagate = False
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter("[%(asctime)s][%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     ch = logging.StreamHandler()
@@ -120,28 +124,32 @@ def compute_sample_weights(labels: List[int], num_classes: int) -> List[float]:
 
 # ─── Control experiments (Editor comment 5) ──────────────────────────────────
 
-def _permute_within_graph(t, batch):
+def _permute_within_graph(t, batch, generator=None):
     """Random permutation of the rows of t, separately inside every graph of the batch."""
-    key = batch.double() + torch.rand(t.size(0), device=t.device, dtype=torch.double)
-    return t[torch.argsort(key)]
+    noise = torch.rand(t.size(0), device=t.device, dtype=torch.double, generator=generator)
+    return t[torch.argsort(batch.double() + noise)]
 
 
-def apply_controls(batch, morph_mode: str = "real", pos_mode: str = "real"):
+def apply_controls(batch, morph_mode: str = "real", pos_mode: str = "real", generator=None):
     """Applied identically in training and evaluation.
+
+    Training draws a new permutation for every mini-batch. Evaluation passes a generator with a fixed seed
+    (train.py: seed + 10000), so the permuted validation/test graphs are the same at every evaluation and are
+    reproducible from the seed.
 
     morph_mode  real | shuffle (rows permuted within each graph) | degree (area, convexity = 0) | none (all 0)
                 NOTE: "none" feeds zeros to MASE (the stream still exists); to REMOVE MASE use model.use_mase=false
     pos_mode    real | shuffle (centroids permuted within each graph)
     """
     if morph_mode == "shuffle":
-        batch.morph = _permute_within_graph(batch.morph, batch.batch)
+        batch.morph = _permute_within_graph(batch.morph, batch.batch, generator)
     elif morph_mode == "degree":
         batch.morph = batch.morph.clone()
         batch.morph[:, 1:] = 0.0
     elif morph_mode == "none":
         batch.morph = torch.zeros_like(batch.morph)
     if pos_mode == "shuffle":
-        batch.pos = _permute_within_graph(batch.pos, batch.batch)
+        batch.pos = _permute_within_graph(batch.pos, batch.batch, generator)
     return batch
 
 

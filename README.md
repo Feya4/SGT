@@ -1,8 +1,13 @@
 # SGT: Structural-Morphology-Aware Graph Transformer
 
+Repository: https://github.com/Feya4/SGT · Archived version: https://doi.org/10.5281/zenodo.XXXXXXX
+
 Official PyTorch implementation of
 
 > **Structural-Morphology-Aware Graph Transformer for Fine-Grained Digital Pathology Image Classification**
+> Feidu Akmel, Xun Gong\*, Ashraf Osman Ibrahim, Gedamu Alemu, Abdalla Hadabi, Abdenacer Naouri
+> Southwest Jiaotong University · Universiti Teknologi PETRONAS · Khalifa University
+> \*Corresponding author: xgong@swjtu.edu.cn
 
 SGT classifies histopathology (and dermoscopy) images from their tissue graphs. It extends a sparse graph transformer with two components:
 
@@ -22,6 +27,12 @@ sgt-pathology/
 ├── model/model.py            # SGT: MASE, gated fusion, SRE attention, classifier
 ├── utils/utils.py            # seeding, losses, sampling weights, control experiments, metrics
 ├── utils/checkpoint.py       # rebuild model + config from a checkpoint
+├── run_controls.py           # control experiments of the revision (5 seeds, Table 7 settings)
+├── summarize_controls.py     # control table, paired t-test and bootstrap vs SGT, settings check
+├── build_reproducibility.py  # builds reproducibility/ (split files + per-sample test predictions)
+├── list_results.py           # mean ± SD of every run group in outputs/
+├── reproducibility/          # split files and per-sample test predictions of every reported run
+├── legacy/sgt_impl13/        # the code that trained the reported runs (archived unchanged)
 ├── preprocessing/            # graph construction and data splits (run once, in the order below)
 │   ├── organize_bracs_official.py
 │   ├── build_bracs_graphs.py
@@ -29,6 +40,9 @@ sgt-pathology/
 │   ├── make_isic_lesion_split.py
 │   ├── inspect_pairs.py
 │   └── preprocess_isic.py
+├── extra/bach/               # optional BACH graphs (not part of the paper)
+├── assets/target.png         # stain-normalisation target (add it, see assets/README.md)
+├── splits/                   # isic2018_lesion_split.csv
 └── data/                     # datasets only (not code, not committed)
 ```
 
@@ -157,11 +171,27 @@ Outputs:
 ```bash
 python train.py --dataset bracs --exp_name abl_noMASE --set model.use_mase=false   # remove MASE
 python train.py --dataset bracs --exp_name abl_noSRE  --set model.use_sre=false    # remove SRE
-python train.py --dataset bracs --exp_name ctl_shuffle --morph_mode shuffle        # permute morphology within each graph
-python train.py --dataset bracs --exp_name ctl_pos     --pos_mode shuffle          # permute centroids within each graph
 ```
 
-`--morph_mode` accepts `real`, `shuffle`, `degree` (area and convexity set to 0) or `none` (all attributes 0, but the stream is kept). To remove the MASE module itself, use `model.use_mase=false`.
+The controls reported in the revision are run with one command. Each control is trained with exactly the settings of the reference SGT runs, read from their saved reports, using seeds 0–4 and the same checkpoint-selection rule:
+
+```bash
+python run_controls.py --ref sgt_bracs          # reference runs: outputs/sgt_bracs_s{0..4}/
+python summarize_controls.py --ref sgt_bracs    # -> outputs/controls_summary_sgt_bracs/summary.{md,csv,json}
+
+# GPU busy? queue them in the background; they start when a GPU has 4 GB free
+bash start_controls.sh sgt_bracs                # log: controls_sgt_bracs.log
+```
+
+| Control | What changes |
+|---|---|
+| `concat` | The degree, area and convexity are concatenated to the node features. There is no MASE stream, the SRE is kept, and the FFN is widened so the parameter count matches SGT (`model.variant=concat`). |
+| `morph_perm` | Morphological attributes are permuted across nodes within each graph, at training and test time. |
+| `pos_perm` | Node coordinates are permuted within each graph at training and test time. Coordinates are used only by the SRE. |
+
+Training draws a new permutation for every mini-batch. Evaluation uses a fixed permutation derived from the seed, so the test results are reproducible.
+
+`summarize_controls.py` reports mean ± SD and the parameter count. It also gives the difference SGT − control with two tests: a seed-paired t-test and a paired bootstrap over test samples (10,000 resamples). It refuses to call the comparison valid if any setting other than the one under test differs from the reference runs, or if the test samples differ.
 
 ### Profiling
 
@@ -171,6 +201,22 @@ python profile_graphs.py --dataset bracs --checkpoint checkpoints/sgt_bracs_s0/b
 
 This reports the number of nodes and edges per graph, the parameter count, peak GPU memory, latency at batch size 1 and throughput. Data loading and feature extraction are not included.
 
+## Hyper-parameters
+
+| | BRACS | ISIC 2018 | CAMELYON16 |
+|---|---|---|---|
+| Layers / heads / hidden / FFN | 6 / 8 / 256 / 512 | same | same |
+| Morph. MLP width, β init | 64, 1.0 | same | same |
+| Dropout / classifier width | 0.1 / 64 | 0.5 / 128 | 0.1 / 128 |
+| Stochastic depth | linear 0 → 0.15, per graph | same | same |
+| Optimiser | AdamW, lr 5e-5, wd 1e-4 | AdamW, lr 3e-5, wd 5e-4 | AdamW, lr 1e-4, wd 1e-4 |
+| Batch / epochs / warm-up / patience | 16 / 200 / 10 / 30 | 16 / 200 / 10 / 30 | 32 / 100 / 5 / 20 |
+| Loss | focal (γ = 2) | CE + label smoothing 0.1 | focal (γ = 2) + class weights |
+| Class imbalance | weighted sampling | weighted sampling | weighted sampling |
+| Augmentation | none | feature noise σ 0.02, edge dropout 0.10 | none |
+| Parameters | 4.90 M | 4.92 M | – |
+
+All runs use cosine decay to 1e-6 after a linear warm-up and gradient clipping at 1.0.
 
 ## Reproducing runs made with the pre-revision code
 
@@ -190,6 +236,16 @@ Checkpoints store the configuration they were trained with:
 ```bash
 --set model.fuse_prev_morph=false model.drop_path_per_graph=false data.bracs_pos=mm data.bracs_area=zlog
 ```
+
+## Archive (Zenodo)
+
+```bash
+python build_reproducibility.py                      # BRACS runs; add --runs / --outputs / --isic_split / --camelyon_split
+```
+
+This writes `reproducibility/splits/<dataset>/` and `reproducibility/predictions/<dataset>/<run>/test_predictions.csv` (sample id, true and predicted class, softmax probabilities) with `test_report.json`, an `index.csv` per dataset, a README and SHA256 checksums. It also prints the BRACS split counts and checks that no slide or ROI occurs in more than one split.
+
+To get a DOI, push a tagged release to GitHub with the Zenodo–GitHub integration enabled. Zenodo reads `.zenodo.json` and mints the DOI; add it to `CITATION.cff` and to the manuscript.
 
 ## Results (manuscript)
 
@@ -212,6 +268,12 @@ For BRACS, the SGT−CGT difference is +0.94 percentage points (95% CI 0.33–1.
 }
 ```
 
+Software: Akmel F. et al., *SGT code, splits and test predictions*, Zenodo, https://doi.org/10.5281/zenodo.XXXXXXX (see `CITATION.cff`).
+
+## License
+
+MIT (see `LICENSE`).
+
 ## Acknowledgements
 
 - Tissue graphs for BRACS come from the HACT preprocessing (Pati et al.).
@@ -220,4 +282,4 @@ For BRACS, the SGT−CGT difference is +0.94 percentage points (95% CI 0.33–1.
 
 ## Contact
 
-Feidu Akmel (feiduakmel4@gmail.com) or Xun Gong (xgong@swjtu.edu.cn).
+Feidu Akmel (feiduakmel@gmail.com) or Xun Gong (xgong@swjtu.edu.cn).

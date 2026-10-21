@@ -1,3 +1,27 @@
+"""
+model.py - Structural-Morphology-Aware Graph Transformer (SGT).
+
+Equation numbers refer to the manuscript (Methods, Section 0.5):
+
+  MorphologicalTokenInit      Eq. (4)      m_i^(0) = W2 ReLU(W1 mu_i + b1) + b2,   mu_i = [d_i, s~_i, c_i]
+  MASEPropagation             Eq. (5)      m_i^(l) = LN(W_self m_i^(l-1) + W_agg mean_{j in N(i)} m_j^(l-1))
+  GatedCrossStreamFusion      Eqs. (6-7)   g_i = sigma(W_gate [h_i^(l-1) || m_i^(l-1)]),  h_in = h^(l-1) + g ⊙ m^(l-1)
+  SpatialRelationshipEncoder  Eq. (8)      phi_ij = 1 / (1 + ||p_i - p_j||^2),  bias = beta * phi_ij
+  SREMultiHeadAttention       Eqs. (9-11)  alpha_ij = softmax_{j in N(i)}(q_i^T k_j / sqrt(d_k) + beta phi_ij)
+  SGTLayer                    Eqs. (12-15) and Algorithm 1, lines 7-16
+  SGT                         Eqs. (2, 16, 17)
+
+Switches (ModelConfig) — defaults implement the manuscript exactly:
+  fuse_prev_morph      True : gate/fusion use m^(l-1) (Eqs. 6-7, Alg. 1 lines 9-10).
+                       False: gate/fusion use m^(l)   (behaviour of the code before this revision).
+  drop_path_per_graph  True : stochastic depth drops a residual branch for a whole graph.
+                       False: one Bernoulli draw per NODE (behaviour before this revision).
+  use_mase / use_sre   ablations; False removes the morphological stream / the spatial bias.
+  variant              "sgt" (default) | "concat": control without MASE in which the three morphological
+                       attributes are concatenated to the node features (in_dim + 3 inputs); the SRE is kept.
+                       With match_params=True the FFN width is enlarged so that the parameter count matches
+                       SGT with the same configuration (see build_model).
+"""
 
 import math
 from typing import Dict, Optional, Tuple
@@ -215,10 +239,16 @@ class SGT(nn.Module):
                  morph_hidden_dim: int = 64, ffn_dim: int = 512, num_classes: int = 7, dropout: float = 0.1,
                  beta_init: float = 1.0, classifier_hidden: int = 128, drop_path_max: float = 0.15,
                  use_mase: bool = True, use_sre: bool = True, fuse_prev_morph: bool = True,
-                 drop_path_per_graph: bool = True):
+                 drop_path_per_graph: bool = True, variant: str = "sgt"):
         super().__init__()
+        if variant not in ("sgt", "concat"):
+            raise ValueError(f"unknown variant {variant!r}")
+        self.variant = variant
+        if variant == "concat":
+            use_mase = False                                       # morphology enters only through the input
         self.use_mase, self.use_sre = use_mase, use_sre
-        self.input_proj = nn.Sequential(nn.Linear(in_dim, hidden_dim), nn.LayerNorm(hidden_dim))
+        proj_in = in_dim + 3 if variant == "concat" else in_dim
+        self.input_proj = nn.Sequential(nn.Linear(proj_in, hidden_dim), nn.LayerNorm(hidden_dim))
         if use_mase:
             self.morph_init = MorphologicalTokenInit(3, morph_hidden_dim, hidden_dim)
         if use_sre:
@@ -246,7 +276,8 @@ class SGT(nn.Module):
         edge_index, batch = data.edge_index, data.batch
         if batch is None:                                           # single un-batched graph
             batch = torch.zeros(data.x.size(0), dtype=torch.long, device=data.x.device)
-        h = self.input_proj(data.x)
+        x = torch.cat([data.x, data.morph], dim=-1) if self.variant == "concat" else data.x
+        h = self.input_proj(x)
         m = self.morph_init(data.morph) if self.use_mase else None
         bias = self.sre(data.pos, edge_index) if self.use_sre else None
         attn, gates = [], []
@@ -278,14 +309,39 @@ class SGT(nn.Module):
 
 # ─── Factory ─────────────────────────────────────────────────────────────────
 
-def build_model(cfg) -> SGT:
-    """Build SGT from a ModelConfig (missing switch fields, e.g. in old checkpoints, take the defaults)."""
+def _count(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def _sgt_kwargs(cfg) -> dict:
     g = lambda name, default: getattr(cfg, name, default)
-    return SGT(in_dim=cfg.in_dim, hidden_dim=cfg.hidden_dim, num_heads=cfg.num_heads, num_layers=cfg.num_layers,
-               morph_hidden_dim=cfg.morph_hidden_dim, ffn_dim=cfg.ffn_dim, num_classes=cfg.num_classes,
-               dropout=cfg.dropout, beta_init=cfg.beta_init, classifier_hidden=cfg.classifier_hidden_dim,
-               drop_path_max=g("drop_path_max", 0.15), use_mase=g("use_mase", True), use_sre=g("use_sre", True),
-               fuse_prev_morph=g("fuse_prev_morph", True), drop_path_per_graph=g("drop_path_per_graph", True))
+    return dict(in_dim=cfg.in_dim, hidden_dim=cfg.hidden_dim, num_heads=cfg.num_heads, num_layers=cfg.num_layers,
+                morph_hidden_dim=cfg.morph_hidden_dim, ffn_dim=cfg.ffn_dim, num_classes=cfg.num_classes,
+                dropout=cfg.dropout, beta_init=cfg.beta_init, classifier_hidden=cfg.classifier_hidden_dim,
+                drop_path_max=g("drop_path_max", 0.15), use_mase=g("use_mase", True), use_sre=g("use_sre", True),
+                fuse_prev_morph=g("fuse_prev_morph", True), drop_path_per_graph=g("drop_path_per_graph", True),
+                variant=g("variant", "sgt"))
+
+
+def matched_ffn_dim(cfg) -> int:
+    """FFN width at which the concat variant has (nearly) the parameter count of SGT with the same config.
+
+    Every extra FFN unit adds 2*hidden_dim + 1 parameters per layer, so the width is solved in closed form
+    from the parameter counts of the two models at the configured width.
+    """
+    kw = _sgt_kwargs(cfg)
+    target = _count(SGT(**{**kw, "variant": "sgt", "use_mase": True}))
+    base = _count(SGT(**{**kw, "variant": "concat"}))
+    per_unit = (2 * cfg.hidden_dim + 1) * cfg.num_layers
+    return cfg.ffn_dim + max(0, round((target - base) / per_unit))
+
+
+def build_model(cfg) -> SGT:
+    """Build SGT (or the concat control) from a ModelConfig. Fields missing in old configs take defaults."""
+    kw = _sgt_kwargs(cfg)
+    if kw["variant"] == "concat" and getattr(cfg, "match_params", True):
+        kw["ffn_dim"] = matched_ffn_dim(cfg)
+    return SGT(**kw)
 
 
 def infer_config_from_checkpoint(state_dict: dict, cfg) -> None:
@@ -305,6 +361,9 @@ def infer_config_from_checkpoint(state_dict: dict, cfg) -> None:
     if "morph_init.mlp.0.weight" in sd:
         cfg.morph_hidden_dim = int(sd["morph_init.mlp.0.weight"].shape[0])
     cfg.use_mase = "morph_init.mlp.0.weight" in sd
+    cfg.variant = "sgt"
+    if not cfg.use_mase and cfg.in_dim % 2 == 1:                 # concat control: in_dim + 3 inputs
+        cfg.variant, cfg.in_dim, cfg.match_params = "concat", cfg.in_dim - 3, False
     cfg.use_sre = "sre.beta" in sd
     while cfg.hidden_dim % cfg.num_heads != 0 and cfg.num_heads > 1:
         cfg.num_heads //= 2

@@ -1,7 +1,26 @@
 """
 train.py - train and evaluate SGT on BRACS, ISIC 2018 (and CAMELYON16 once its loader is added).
 
-   
+    python train.py --dataset bracs --seed 0 --exp_name sgt_bracs_s0
+    python train.py --dataset isic  --seed 0 --exp_name sgt_isic_s0
+    python train.py --dataset bracs --seed 0 --exp_name x --morph_mode shuffle        # control experiment
+    python train.py --dataset bracs --exp_name x --set train.lr=1e-4 model.dropout=0.2  # any config field
+    python train.py --dataset bracs --exp_name x --test_only                          # re-evaluate best.pt
+    python train.py --dataset bracs --exp_name abl_noSRE  --set model.use_sre=false    # ablation: no SRE
+    python train.py --dataset bracs --exp_name abl_noMASE --set model.use_mase=false   # ablation: no MASE
+    python train.py --dataset bracs --exp_name ctl_concat --set model.variant=concat    # parameter-matched concat
+    (all controls of the revision, 5 seeds each: python run_controls.py --ref sgt_bracs)
+
+Reproduce / re-evaluate runs made with the code before the October 2026 revision:
+    --set model.fuse_prev_morph=false model.drop_path_per_graph=false data.bracs_pos=mm data.bracs_area=zlog
+
+Protocol (identical for all datasets)
+  * train on the training split only;
+  * after every epoch compute weighted F1 on the validation split; the checkpoint with the highest validation
+    weighted F1 is kept (best.pt); training stops after `patience` epochs without improvement;
+  * the test split is evaluated exactly once, with best.pt, after training;
+  * per-sample predictions (id, label, softmax probabilities) and every setting used are written to
+    <output_dir>/<exp_name>/report/.
 """
 import argparse
 import json
@@ -61,8 +80,12 @@ def predict(model, loader, criterion, device, cfg):
     """(labels, softmax probabilities, mean loss) in dataset order."""
     model.eval()
     ys, ps, losses = [], [], []
+    gen = None
+    if cfg.morph_mode != "real" or cfg.pos_mode != "real":       # same permutation at every evaluation
+        gen = torch.Generator(device=device)
+        gen.manual_seed(cfg.seed + 10000)
     for batch in loader:
-        batch = apply_controls(batch.to(device), cfg.morph_mode, cfg.pos_mode)
+        batch = apply_controls(batch.to(device), cfg.morph_mode, cfg.pos_mode, gen)
         targets = get_targets(batch, cfg.model.num_classes)
         logits = model(batch)
         losses.append(criterion(logits, targets).item())
@@ -165,7 +188,7 @@ def main(cfg, resume=False, test_only=False):
     report = {
         "dataset": cfg.dataset, "seed": cfg.seed, "split_sizes": sizes, "best_epoch": int(best_epoch),
         "controls": {"morph_mode": cfg.morph_mode, "pos_mode": cfg.pos_mode},
-        "loss": loss_name, "n_params": n_params,
+        "loss": loss_name, "n_params": n_params, "variant": cfg.model.variant,
         "metric_definitions": {
             "weighted_f1": "sklearn f1_score(average='weighted')",
             "macro_f1": "sklearn f1_score(average='macro')",
