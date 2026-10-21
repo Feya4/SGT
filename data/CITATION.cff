@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the article and the archived software."
+title: "SGT: Structural-Morphology-Aware Graph Transformer for Fine-Grained Digital Pathology Image Classification"
+type: software
+license: MIT
+version: "1.1.0"
+doi: "10.5281/zenodo.XXXXXXX"
+authors:
+  - {family-names: Akmel, given-names: Feidu, affiliation: "Southwest Jiaotong University"}
+  - {family-names: Gong, given-names: Xun, affiliation: "Southwest Jiaotong University"}
+  - {family-names: Ibrahim, given-names: Ashraf Osman, affiliation: "Universiti Teknologi PETRONAS"}
+  - {family-names: Alemu, given-names: Gedamu, affiliation: "Khalifa University of Science and Technology"}
+  - {family-names: Hadabi, given-names: Abdalla, affiliation: "Southwest Jiaotong University"}
+  - {family-names: Naouri, given-names: Abdenacer, affiliation: "Southwest Jiaotong University"}
