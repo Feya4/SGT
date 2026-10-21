@@ -1,0 +1,16 @@
+{
+  "title": "SGT: Structural-Morphology-Aware Graph Transformer for Fine-Grained Digital Pathology Image Classification (code, splits and test predictions)",
+  "upload_type": "software",
+  "description": "Source code of SGT (graph construction, training, evaluation, control experiments and statistical tests), the data split files of BRACS, CAMELYON16 and ISIC 2018, and the per-sample test predictions and reports of every run reported in the manuscript. Image data are not included; they are available from the original providers.",
+  "creators": [
+    {"name": "Akmel, Feidu", "affiliation": "Southwest Jiaotong University"},
+    {"name": "Gong, Xun", "affiliation": "Southwest Jiaotong University"},
+    {"name": "Ibrahim, Ashraf Osman", "affiliation": "Universiti Teknologi PETRONAS"},
+    {"name": "Alemu, Gedamu", "affiliation": "Khalifa University of Science and Technology"},
+    {"name": "Hadabi, Abdalla", "affiliation": "Southwest Jiaotong University"},
+    {"name": "Naouri, Abdenacer", "affiliation": "Southwest Jiaotong University"}
+  ],
+  "license": "MIT",
+  "keywords": ["computational pathology", "graph transformer", "tissue graph", "BRACS", "CAMELYON16", "ISIC 2018", "morphology"],
+  "access_right": "open"
+}
