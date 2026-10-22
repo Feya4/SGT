@@ -86,7 +86,7 @@ def config_from_report(report: dict):
         raise ValueError("report has neither 'config' nor 'args'")
     from config import get_config
     ds = str(report.get("dataset", "bracs")).lower()
-    cfg = get_config("isic" if "isic" in ds else "camelyon16" if "camelyon" in ds else "bracs")
+    cfg = get_config("isic" if "isic" in ds else "camelyon" if "camelyon" in ds else "bracs")
     for name, value in args.items():
         if name in ARGS_MAP:
             section, field = ARGS_MAP[name]
