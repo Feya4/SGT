@@ -1,11 +1,11 @@
 """
 config.py - every hyper-parameter and path of the SGT experiments in one place.
 
-Three presets, selected by dataset name:
+Three presets, selected by dataset name ("camelyon16" is accepted as another name for "camelyon"):
 
     cfg = get_config("bracs")       # BRACS 7-class subtyping
     cfg = get_config("isic")        # ISIC 2018 Task 3, 7-class dermoscopy
-    cfg = get_config("camelyon16")  # CAMELYON16, normal vs tumor (training settings only, see dataset.py)
+    cfg = get_config("camelyon")    # CAMELYON patch graphs, Normal vs Tumor (precomputed graphs, see dataset.py)
 
 Presets follow the manuscript (Implementation Details, Section 0.7). Any value can be
 overridden from the command line of train.py (see --set).
@@ -19,8 +19,8 @@ ROOT = os.environ.get("SGT_ROOT", ".")
 
 BRACS_CLASSES = ["N", "PB", "UDH", "ADH", "FEA", "DCIS", "IC"]
 ISIC_CLASSES = ["MEL", "NV", "BCC", "AKIEC", "BKL", "DF", "VASC"]
-CAMELYON16_CLASSES = ["normal", "tumor"]
-CLASS_NAMES = {"bracs": BRACS_CLASSES, "isic": ISIC_CLASSES, "camelyon16": CAMELYON16_CLASSES}
+CAMELYON_CLASSES = ["Normal", "Tumor"]
+CLASS_NAMES = {"bracs": BRACS_CLASSES, "isic": ISIC_CLASSES, "camelyon": CAMELYON_CLASSES}
 
 
 @dataclass
@@ -79,6 +79,10 @@ class DataConfig:
                              "ISIC2018_Task3_Training_GroundTruth.csv")
     isic_split_csv: str = f"{ROOT}/splits/isic2018_lesion_split.csv"
     isic_cache_dir: str = f"{ROOT}/data/graph_cache/isic"
+    # CAMELYON: precomputed patch graphs {train,val,test}_graphs.pkl (256x256 patches, 64 tiles of 32x32,
+    # ResNet-18 512-d node features, spatial k-NN edges, graph-derived morphology stored in the graphs)
+    camelyon_graph_dir: str = ("/workdir1.8t/fei27/CGT/GNNMD/BACH/camon2018/data/classifier/"
+                               "revised_graph_experiment_seed42/precomputed_graphs_fast")
     n_segments: int = 75              # SLIC superpixels per image (ISIC)
     k_neighbours: int = 6             # k-NN graph (ISIC)
 
@@ -118,6 +122,8 @@ class Config:
 
 
 def get_config(dataset: str) -> Config:
+    if dataset == "camelyon16":
+        dataset = "camelyon"
     cfg = Config(dataset=dataset)
     if dataset == "bracs":
         cfg.exp_name = "sgt_bracs_s0"
@@ -136,8 +142,10 @@ def get_config(dataset: str) -> Config:
         cfg.train.loss = "ce_ls"
         cfg.train.feat_noise_std, cfg.train.edge_drop_p = 0.02, 0.10
         cfg.train.num_workers = 2
-    elif dataset == "camelyon16":
-        cfg.exp_name = "sgt_camelyon16_s0"
+    elif dataset == "camelyon":
+        # settings of the completed CAMELYON patch-graph experiment (seeds 42, 123, 2026)
+        cfg.exp_name = "sgt_camelyon_s42"
+        cfg.seed = 42
         cfg.model.num_classes = 2
         cfg.model.dropout = 0.1
         cfg.model.classifier_hidden_dim = 128
@@ -146,7 +154,8 @@ def get_config(dataset: str) -> Config:
         cfg.train.lr, cfg.train.weight_decay = 1e-4, 1e-4
         cfg.train.loss = "focal"
         cfg.train.class_weights = True                  # unlike BRACS/ISIC: class weights in the loss ...
-        cfg.train.weighted_sampling = True              # ... AND weighted sampling
+        cfg.train.weighted_sampling = True              # ... and weighted sampling
+        cfg.train.num_workers = 2
     else:
         raise ValueError(f"unknown dataset {dataset!r}")
     return cfg.validate()
