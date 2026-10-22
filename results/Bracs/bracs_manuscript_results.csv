@@ -1,0 +1,12 @@
+﻿dataset,model,evaluation_split,metric,class_name,mean_percent,sd_percent,n_seeds
+BRACS,SGT,test,test_accuracy,overall,67.25,0.95,5
+BRACS,SGT,validation,validation_accuracy,overall,67.95,0.65,5
+BRACS,SGT,test,weighted_f1,overall,67.61,0.48,5
+BRACS,SGT,test,macro_f1,overall,66.59,0.3,5
+BRACS,SGT,test,class_f1,Normal,66.72,0.48,5
+BRACS,SGT,test,class_f1,PB,58.63,1.83,5
+BRACS,SGT,test,class_f1,UDH,49.25,0.42,5
+BRACS,SGT,test,class_f1,ADH,51.39,0.55,5
+BRACS,SGT,test,class_f1,FEA,76.61,0.31,5
+BRACS,SGT,test,class_f1,DCIS,73.83,0.28,5
+BRACS,SGT,test,class_f1,Invasive,89.7,0.61,5
