@@ -167,7 +167,10 @@ def compute_metrics(y: np.ndarray, probs: np.ndarray, class_names: List[str]) ->
         yc = (y == c).astype(int)
         per_auc.append(float(roc_auc_score(yc, probs[:, c])) if 0 < yc.sum() < len(yc) else float("nan"))
     try:
-        auc = float(roc_auc_score(y, probs, multi_class="ovr", average="macro", labels=labels))
+        if len(labels) == 2:          # binary: sklearn needs the positive-class score, not a 2-column matrix
+            auc = float(roc_auc_score(y, probs[:, 1]))
+        else:
+            auc = float(roc_auc_score(y, probs, multi_class="ovr", average="macro", labels=labels))
     except ValueError:
         auc = float("nan")
     return {
