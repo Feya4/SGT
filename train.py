@@ -1,8 +1,9 @@
 """
-train.py - train and evaluate SGT on BRACS, ISIC 2018 (and CAMELYON16 once its loader is added).
+train.py - train and evaluate SGT on BRACS, ISIC 2018 or CAMELYON (precomputed patch graphs).
 
     python train.py --dataset bracs --seed 0 --exp_name sgt_bracs_s0
     python train.py --dataset isic  --seed 0 --exp_name sgt_isic_s0
+    python train.py --dataset camelyon --seed 42 --exp_name sgt_camelyon_s42   # seeds 42, 123, 2026
     python train.py --dataset bracs --seed 0 --exp_name x --morph_mode shuffle        # control experiment
     python train.py --dataset bracs --exp_name x --set train.lr=1e-4 model.dropout=0.2  # any config field
     python train.py --dataset bracs --exp_name x --test_only                          # re-evaluate best.pt
@@ -206,7 +207,7 @@ def main(cfg, resume=False, test_only=False):
 def parse_args():
     p = argparse.ArgumentParser(description="Train / evaluate SGT",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--dataset", choices=["bracs", "isic", "camelyon16"], required=True)
+    p.add_argument("--dataset", choices=["bracs", "isic", "camelyon", "camelyon16"], required=True)
     p.add_argument("--exp_name", default=None)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--epochs", type=int, default=None)
@@ -228,6 +229,8 @@ if __name__ == "__main__":
     for name in ("exp_name", "seed", "morph_mode", "pos_mode"):
         if getattr(a, name) is not None:
             setattr(cfg, name, getattr(a, name))
+    if a.exp_name is None and a.seed is not None:   # never let two seeds share one output folder
+        cfg.exp_name = f"sgt_{cfg.dataset}_s{a.seed}"
     if a.epochs is not None:
         cfg.train.epochs = a.epochs
     if a.patience is not None:
