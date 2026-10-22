@@ -5,3 +5,5 @@ paper. Commit the file you trained with so that results can be reproduced exactl
 
 `isic2018_near_duplicates_cross_lesion.csv` lists the near-duplicate pairs merged into one group.
 BRACS uses the official split defined by the ROI image folders (see preprocessing/organize_bracs_official.py).
+
+'`CAMELYON: camelyon_revised_graph_split_seed42.csv` records the patch-level split used in the  SGT experiment: 10,099 training, 1,625 validation, and 2,885 test samples (300 normal, 2,585 tumor). The split has no overlapping filenames across partitions. Three training seeds (42, 123, 2026) were evaluated; their metrics and per-sample predictions are provided.
