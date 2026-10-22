@@ -19,7 +19,10 @@ BRACS   region-adjacency graphs of H&E ROIs (official HACT preprocessing). The R
 ISIC    SLIC superpixels of the dermoscopy image (75 regions), ResNet-50 features of a 64x64 crop
         projected to 512-d by one fixed random matrix (seed 42) shared by all images, k-NN graph on centroids.
         Graphs are cached on disk (GRAPH_VERSION is part of the cache key).
-CAMELYON16  not included in this file yet (needs the WSI graph-building code).
+CAMELYON  precomputed patch graphs (one graph per 256x256 patch: 64 tiles of 32x32 as nodes, ResNet-18 512-d features,
+        spatial k-NN edges, graph-derived morphology) read from {train,val,test}_graphs.pkl. The graphs are used
+        exactly as stored: label (y), node positions (pos) and morphology (morph) are NOT recomputed - the BRACS and
+        ISIC morphology code is never applied to them. Labels: 0 = Normal, 1 = Tumor.
 
 No silent fixes: labels are validated, never clamped; no synthetic morphology; no augmentation graphs.
 """
@@ -38,7 +41,7 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as GeoDataLoader
 from torch_geometric.utils import to_undirected
 
-from config import BRACS_CLASSES, ISIC_CLASSES
+from config import BRACS_CLASSES, CAMELYON_CLASSES, ISIC_CLASSES
 from utils import compute_sample_weights
 
 warnings.filterwarnings("ignore")
@@ -357,6 +360,124 @@ class ISICDataset(Dataset):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# CAMELYON (precomputed patch graphs)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_ID_FIELDS = ("sample_id", "name", "filename", "file_name", "patch_id", "id", "image_id", "path")
+
+
+def _load_graph_list(path: Path):
+    """List of graphs from a pickle: a list/tuple of Data, or a dict holding such a list."""
+    import pickle
+    try:
+        with open(path, "rb") as fh:
+            obj = pickle.load(fh)
+    except Exception:                                            # saved with torch.save instead of pickle
+        obj = torch.load(str(path), map_location="cpu", weights_only=False)
+    if isinstance(obj, dict):
+        for key in ("graphs", "data", "data_list", "dataset"):
+            if key in obj:
+                obj = obj[key]
+                break
+        else:
+            raise ValueError(f"{path.name}: dict without a graph list (keys: {list(obj)[:10]})")
+    if not isinstance(obj, (list, tuple)) or not obj:
+        raise ValueError(f"{path.name}: expected a non-empty list of graphs, got {type(obj).__name__}")
+    return list(obj)
+
+
+def _field_names(g):
+    k = g.keys() if callable(getattr(g, "keys", None)) else getattr(g, "keys", [])
+    return list(k)
+
+
+def _sample_id(g, path: Path, i: int):
+    for k in _ID_FIELDS:
+        v = getattr(g, k, None) if not isinstance(g, dict) else g.get(k)
+        if v is not None:
+            v = v[0] if isinstance(v, (list, tuple)) and len(v) == 1 else v
+            return str(v)
+    return None
+
+
+class CAMELYONDataset(Dataset):
+    """
+    Precomputed CAMELYON patch graphs of one split, used exactly as stored.
+
+    Every graph must carry x (N, 512), edge_index, pos (N, 2), morph (N, 3) and y (0 = Normal, 1 = Tumor).
+    Missing fields raise an error instead of being filled in. sample_id is kept for the prediction export;
+    graphs without an identifier field get "<split>_<index>" (index = position in the pickle) and a warning.
+    """
+
+    REQUIRED = ("x", "edge_index", "pos", "morph", "y")
+
+    def __init__(self, root, split: str):
+        super().__init__()
+        if split not in ("train", "val", "test"):
+            raise ValueError(f"split must be train/val/test, got {split!r}")
+        path = Path(root) / f"{split}_graphs.pkl"
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found (data.camelyon_graph_dir = {root})")
+        raw = _load_graph_list(path)
+        self.graphs, self.ids, self.labels, generated = [], [], [], 0
+        for i, g in enumerate(raw):
+            if isinstance(g, dict):
+                g = Data(**g)
+            missing = [k for k in self.REQUIRED if getattr(g, k, None) is None]
+            if missing:
+                raise ValueError(f"{path.name} graph {i}: missing field(s) {missing}; stored fields: {_field_names(g)}")
+            x, ei, pos, morph = (torch.as_tensor(getattr(g, k)) for k in ("x", "edge_index", "pos", "morph"))
+            y = int(torch.as_tensor(g.y).view(-1)[0])
+            if y not in (0, 1):
+                raise ValueError(f"{path.name} graph {i}: label {y} is not 0 (Normal) or 1 (Tumor)")
+            if x.size(1) != 512:
+                raise ValueError(f"{path.name} graph {i}: node features have {x.size(1)} dims, expected 512")
+            if morph.dim() != 2 or morph.size(1) != 3 or morph.size(0) != x.size(0):
+                raise ValueError(f"{path.name} graph {i}: morph has shape {tuple(morph.shape)}, expected ({x.size(0)}, 3)")
+            if pos.dim() != 2 or pos.size(0) != x.size(0):
+                raise ValueError(f"{path.name} graph {i}: pos has shape {tuple(pos.shape)}, expected ({x.size(0)}, 2)")
+            sid = _sample_id(g, path, i)
+            if sid is None:
+                sid, generated = f"{split}_{i:06d}", generated + 1
+            # keep only the fields the model reads (other attributes, e.g. strings, would break batching)
+            self.graphs.append(Data(x=x.float(), edge_index=ei.long(), pos=pos.float(), morph=morph.float(),
+                                    y=torch.tensor([y], dtype=torch.long), num_nodes=x.size(0)))
+            self.ids.append(sid)
+            self.labels.append(y)
+        if len(set(self.ids)) != len(self.ids):
+            raise ValueError(f"{path.name}: sample identifiers are not unique")
+        if generated:
+            print(f"  WARNING: {generated} graphs in {path.name} have no identifier field; "
+                  f"using {split}_<index> (position in the pickle)")
+        cnt = Counter(self.labels)
+        nodes = [g.num_nodes for g in self.graphs]
+        print(f"[CAMELYON:{split}] {len(self.graphs)} graphs  Normal={cnt.get(0, 0)}  Tumor={cnt.get(1, 0)}  "
+              f"nodes/graph {min(nodes)}-{max(nodes)}")
+
+    def __len__(self):
+        return len(self.graphs)
+
+    def __getitem__(self, idx):
+        return self.graphs[idx]
+
+    def get_labels(self) -> List[int]:
+        return list(self.labels)
+
+    def get_ids(self) -> List[str]:
+        return list(self.ids)
+
+
+def check_split_overlap(datasets):
+    """Raise if any sample identifier occurs in more than one split."""
+    names = ("train", "val", "test")
+    for a in range(3):
+        for b in range(a + 1, 3):
+            common = set(datasets[a].get_ids()) & set(datasets[b].get_ids())
+            if common:
+                raise ValueError(f"{len(common)} sample ids in both {names[a]} and {names[b]}, e.g. {sorted(common)[:3]}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Loaders
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -374,8 +495,11 @@ def build_datasets(cfg):
             sizes = load_roi_sizes(str(root), d.bracs_image_dir, stems)
         print(f"[BRACS] pos={d.bracs_pos} area={d.bracs_area}")
         return tuple(BRACSDataset(str(dd), d.bracs_pos, d.bracs_area, sizes, stats) for dd in dirs)
-    if cfg.dataset == "camelyon16":
-        raise NotImplementedError("CAMELYON16 loader not included yet - add the WSI graph-building code")
+    if cfg.dataset in ("camelyon", "camelyon16"):
+        root = Path(d.camelyon_graph_dir)
+        sets = tuple(CAMELYONDataset(root, split) for split in ("train", "val", "test"))
+        check_split_overlap(sets)
+        return sets
     feat_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return tuple(ISICDataset(d.isic_image_dir, d.isic_annotations, d.isic_split_csv, s, d.isic_cache_dir,
                              feat_device, d.n_segments, d.k_neighbours) for s in ("train", "val", "test"))
