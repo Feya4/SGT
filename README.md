@@ -82,13 +82,6 @@ python preprocessing/compute_morphology.py --check 5
 python preprocessing/compute_morphology.py --workers 8 # -> data/tissue_graphs_official_morph/
 ```
 
-The resulting layout is:
-
-```
-data/{train,val,test}/<class>/.../BRACS_*.png                  # ROI images
-data/tissue_graphs_official_morph/{train,val,test}_official/   # graphs used for training
-```
-
 - Node features are 512-d ResNet-34 features; the two location features of the RAG builder are dropped.
 - `compute_morphology.py` checks that every region matches a graph node (same count, centroids within 2 px) and that the features are 512-dimensional. It lists any graph that fails in `morphology_problems.txt`.
 - The ROI sizes needed to normalise centroids to [0, 1] are read from the image headers once and cached in `roi_image_sizes.json`.
