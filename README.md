@@ -1,7 +1,6 @@
 # SGT: Structural-Morphology-Aware Graph Transformer
 
-Repository: https://github.com/Feya4/SGT · Archived version: https://doi.org/10.5281/zenodo.XXXXXXX
-
+Repository: https://github.com/Feya4/SGT · 
 Official PyTorch implementation of
 
 > **Structural-Morphology-Aware Graph Transformer for Fine-Grained Digital Pathology Image Classification**
@@ -128,24 +127,6 @@ Graphs must be cached before training, because DataLoader workers cannot use the
 
 The training settings are in the `camelyon16` preset. **The WSI graph-building code and data loader are not yet included.**
 
-## Training and evaluation
-
-```bash
-python train.py --dataset bracs --seed 0 --exp_name sgt_bracs_s0
-python train.py --dataset isic  --seed 0 --exp_name sgt_isic_s0
-
-# re-evaluate a trained model (best.pt) on the test split
-python train.py --dataset bracs --exp_name sgt_bracs_s0 --test_only
-
-# override any config field
-python train.py --dataset bracs --exp_name x --set train.lr=1e-4 model.dropout=0.2
-```
-
-The paper reports mean ± SD over seeds 0–4:
-
-```bash
-for s in 0 1 2 3 4; do python train.py --dataset bracs --seed $s --exp_name sgt_bracs_s$s; done
-```
 
 **Protocol.**
 
@@ -153,50 +134,6 @@ for s in 0 1 2 3 4; do python train.py --dataset bracs --seed $s --exp_name sgt_
 - Weighted F1 on the validation split is computed after every epoch, and the checkpoint with the highest value is kept.
 - Training stops early after `patience` epochs without improvement.
 - The test split is evaluated **once**, with that checkpoint.
-
-Outputs:
-
-| File | Content |
-|---|---|
-| `checkpoints/<exp>/best.pt` | best-validation checkpoint (`latest.pt` for `--resume`) |
-| `outputs/<exp>/train.log` | per-epoch log |
-| `outputs/<exp>/report/test_report.json` | metrics (accuracy, weighted/macro F1, macro OvR AUC, per class, confusion matrix) and the full config |
-| `outputs/<exp>/report/{val,test}_predictions.npz` | sample id, label, prediction, softmax probabilities |
-
-### Ablations and control experiments
-
-```bash
-python train.py --dataset bracs --exp_name abl_noMASE --set model.use_mase=false   # remove MASE
-python train.py --dataset bracs --exp_name abl_noSRE  --set model.use_sre=false    # remove SRE
-```
-
-The controls reported in the revision are run with one command. Each control is trained with exactly the settings of the reference SGT runs, read from their saved reports, using seeds 0–4 and the same checkpoint-selection rule:
-
-```bash
-python run_controls.py --ref sgt_bracs          # reference runs: outputs/sgt_bracs_s{0..4}/
-python summarize_controls.py --ref sgt_bracs    # -> outputs/controls_summary_sgt_bracs/summary.{md,csv,json}
-
-# GPU busy? queue them in the background; they start when a GPU has 4 GB free
-bash start_controls.sh sgt_bracs                # log: controls_sgt_bracs.log
-```
-
-| Control | What changes |
-|---|---|
-| `concat` | The degree, area and convexity are concatenated to the node features. There is no MASE stream, the SRE is kept, and the FFN is widened so the parameter count matches SGT (`model.variant=concat`). |
-| `morph_perm` | Morphological attributes are permuted across nodes within each graph, at training and test time. |
-| `pos_perm` | Node coordinates are permuted within each graph at training and test time. Coordinates are used only by the SRE. |
-
-Training draws a new permutation for every mini-batch. Evaluation uses a fixed permutation derived from the seed, so the test results are reproducible.
-
-`summarize_controls.py` reports mean ± SD and the parameter count. It also gives the difference SGT − control with two tests: a seed-paired t-test and a paired bootstrap over test samples (10,000 resamples). It refuses to call the comparison valid if any setting other than the one under test differs from the reference runs, or if the test samples differ.
-
-### Profiling
-
-```bash
-python profile_graphs.py --dataset bracs --checkpoint checkpoints/sgt_bracs_s0/best.pt
-```
-
-This reports the number of nodes and edges per graph, the parameter count, peak GPU memory, latency at batch size 1 and throughput. Data loading and feature extraction are not included.
 
 ## Hyper-parameters
 
@@ -233,16 +170,6 @@ Checkpoints store the configuration they were trained with:
 ```bash
 --set model.fuse_prev_morph=false model.drop_path_per_graph=false data.bracs_pos=mm data.bracs_area=zlog
 ```
-
-## Archive (Zenodo)
-
-```bash
-python build_reproducibility.py                      # BRACS runs; add --runs / --outputs / --isic_split / --camelyon_split
-```
-
-This writes `reproducibility/splits/<dataset>/` and `reproducibility/predictions/<dataset>/<run>/test_predictions.csv` (sample id, true and predicted class, softmax probabilities) with `test_report.json`, an `index.csv` per dataset, a README and SHA256 checksums. It also prints the BRACS split counts and checks that no slide or ROI occurs in more than one split.
-
-To get a DOI, push a tagged release to GitHub with the Zenodo–GitHub integration enabled. Zenodo reads `.zenodo.json` and mints the DOI; add it to `CITATION.cff` and to the manuscript.
 
 ## Results (manuscript)
 
