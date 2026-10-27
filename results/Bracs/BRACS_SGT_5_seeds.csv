@@ -1,56 +1,56 @@
-dataset,model,evaluation_split,metric,class_name,seed,value_percent
-BRACS,SGT,test,test_accuracy,overall,0,66.192792
-BRACS,SGT,test,test_accuracy,overall,1,66.62312
-BRACS,SGT,test,test_accuracy,overall,2,67.061571
-BRACS,SGT,test,test_accuracy,overall,3,67.887199
-BRACS,SGT,test,test_accuracy,overall,4,68.500318
-BRACS,SGT,validation,validation_accuracy,overall,0,67.187808
-BRACS,SGT,validation,validation_accuracy,overall,1,67.548904
-BRACS,SGT,validation,validation_accuracy,overall,2,67.871235
-BRACS,SGT,validation,validation_accuracy,overall,3,68.3791096
-BRACS,SGT,validation,validation_accuracy,overall,4,68.772192
-BRACS,SGT,test,weighted_f1,overall,0,67.192843
-BRACS,SGT,test,weighted_f1,overall,1,67.296421
-BRACS,SGT,test,weighted_f1,overall,2,67.307502
-BRACS,SGT,test,weighted_f1,overall,3,67.983579
-BRACS,SGT,test,weighted_f1,overall,4,68.287157
-BRACS,SGT,test,macro_f1,overall,0,66.190527
-BRACS,SGT,test,macro_f1,overall,1,66.580263
-BRACS,SGT,test,macro_f1,overall,2,66.590122
-BRACS,SGT,test,macro_f1,overall,3,66.729737
-BRACS,SGT,test,macro_f1,overall,4,66.869473
-BRACS,SGT,test,class_f1,Normal,0,66.112843
-BRACS,SGT,test,class_f1,Normal,1,66.316421
-BRACS,SGT,test,class_f1,Normal,2,66.921052
-BRACS,SGT,test,class_f1,Normal,3,67.023579
-BRACS,SGT,test,class_f1,Normal,4,67.327157
-BRACS,SGT,test,class_f1,PB,0,56.215213
-BRACS,SGT,test,class_f1,PB,1,57.572606
-BRACS,SGT,test,class_f1,PB,2,58.631251
-BRACS,SGT,test,class_f1,PB,3,59.787394
-BRACS,SGT,test,class_f1,PB,4,60.844787
-BRACS,SGT,test,class_f1,UDH,0,48.818737
-BRACS,SGT,test,class_f1,UDH,1,48.884369
-BRACS,SGT,test,class_f1,UDH,2,49.351002
-BRACS,SGT,test,class_f1,UDH,3,49.515631
-BRACS,SGT,test,class_f1,UDH,4,49.781263
-BRACS,SGT,test,class_f1,ADH,0,50.594299
-BRACS,SGT,test,class_f1,ADH,1,51.042149
-BRACS,SGT,test,class_f1,ADH,2,51.490514
-BRACS,SGT,test,class_f1,ADH,3,51.637851
-BRACS,SGT,test,class_f1,ADH,4,52.085701
-BRACS,SGT,test,class_f1,FEA,0,76.317878
-BRACS,SGT,test,class_f1,FEA,1,76.310039
-BRACS,SGT,test,class_f1,FEA,2,76.711912
-BRACS,SGT,test,class_f1,FEA,3,76.806061
-BRACS,SGT,test,class_f1,FEA,4,77.002122
-BRACS,SGT,test,class_f1,DCIS,0,73.375825
-BRACS,SGT,test,class_f1,DCIS,1,73.652912
-BRACS,SGT,test,class_f1,DCIS,2,73.932401
-BRACS,SGT,test,class_f1,DCIS,3,74.107088
-BRACS,SGT,test,class_f1,DCIS,4,74.184175
-BRACS,SGT,test,class_f1,Invasive,0,88.828404
-BRACS,SGT,test,class_f1,Invasive,1,89.114202
-BRACS,SGT,test,class_f1,Invasive,2,89.900241
-BRACS,SGT,test,class_f1,Invasive,3,90.085798
-BRACS,SGT,test,class_f1,Invasive,4,90.471596
+dataset	model	evaluation_split	metric	class_name	seed	value_percent
+BRACS	SGT	test	test_accuracy	overall	0	66.192792
+BRACS	SGT	test	test_accuracy	overall	1	66.62312
+BRACS	SGT	test	test_accuracy	overall	2	67.061571
+BRACS	SGT	test	test_accuracy	overall	3	67.887199
+BRACS	SGT	test	test_accuracy	overall	4	68.500318
+BRACS	SGT	validation	validation_accuracy	overall	0	67.187808
+BRACS	SGT	validation	validation_accuracy	overall	1	67.548904
+BRACS	SGT	validation	validation_accuracy	overall	2	67.871235
+BRACS	SGT	validation	validation_accuracy	overall	3	68.3791096
+BRACS	SGT	validation	validation_accuracy	overall	4	68.772192
+BRACS	SGT	test	weighted_f1	overall	0	67.192843
+BRACS	SGT	test	weighted_f1	overall	1	67.296421
+BRACS	SGT	test	weighted_f1	overall	2	67.307502
+BRACS	SGT	test	weighted_f1	overall	3	67.983579
+BRACS	SGT	test	weighted_f1	overall	4	68.287157
+BRACS	SGT	test	macro_f1	overall	0	66.190527
+BRACS	SGT	test	macro_f1	overall	1	66.580263
+BRACS	SGT	test	macro_f1	overall	2	66.590122
+BRACS	SGT	test	macro_f1	overall	3	66.729737
+BRACS	SGT	test	macro_f1	overall	4	66.869473
+BRACS	SGT	test	class_f1	Normal	0	66.112843
+BRACS	SGT	test	class_f1	Normal	1	66.316421
+BRACS	SGT	test	class_f1	Normal	2	66.921052
+BRACS	SGT	test	class_f1	Normal	3	67.023579
+BRACS	SGT	test	class_f1	Normal	4	67.327157
+BRACS	SGT	test	class_f1	PB	0	56.215213
+BRACS	SGT	test	class_f1	PB	1	57.572606
+BRACS	SGT	test	class_f1	PB	2	58.631251
+BRACS	SGT	test	class_f1	PB	3	59.787394
+BRACS	SGT	test	class_f1	PB	4	60.844787
+BRACS	SGT	test	class_f1	UDH	0	48.818737
+BRACS	SGT	test	class_f1	UDH	1	48.884369
+BRACS	SGT	test	class_f1	UDH	2	49.351002
+BRACS	SGT	test	class_f1	UDH	3	49.515631
+BRACS	SGT	test	class_f1	UDH	4	49.781263
+BRACS	SGT	test	class_f1	ADH	0	50.594299
+BRACS	SGT	test	class_f1	ADH	1	51.042149
+BRACS	SGT	test	class_f1	ADH	2	51.490514
+BRACS	SGT	test	class_f1	ADH	3	51.637851
+BRACS	SGT	test	class_f1	ADH	4	52.085701
+BRACS	SGT	test	class_f1	FEA	0	76.317878
+BRACS	SGT	test	class_f1	FEA	1	76.310039
+BRACS	SGT	test	class_f1	FEA	2	76.711912
+BRACS	SGT	test	class_f1	FEA	3	76.806061
+BRACS	SGT	test	class_f1	FEA	4	77.002122
+BRACS	SGT	test	class_f1	DCIS	0	73.375825
+BRACS	SGT	test	class_f1	DCIS	1	73.652912
+BRACS	SGT	test	class_f1	DCIS	2	73.932401
+BRACS	SGT	test	class_f1	DCIS	3	74.107088
+BRACS	SGT	test	class_f1	DCIS	4	74.184175
+BRACS	SGT	test	class_f1	Invasive	0	88.828404
+BRACS	SGT	test	class_f1	Invasive	1	89.114202
+BRACS	SGT	test	class_f1	Invasive	2	89.900241
+BRACS	SGT	test	class_f1	Invasive	3	90.085798
+BRACS	SGT	test	class_f1	Invasive	4	90.471596
