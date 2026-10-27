@@ -32,7 +32,7 @@ sgt-pathology/
 ├── build_reproducibility.py  # builds reproducibility/ (split files + per-sample test predictions)
 ├── list_results.py           # mean ± SD of every run group in outputs/
 ├── reproducibility/          # split files and per-sample test predictions of every reported run
-├── legacy/sgt_impl13/        # the code that trained the reported runs (archived unchanged)
+├── results/isic2018/       
 ├── preprocessing/            # graph construction and data splits (run once, in the order below)
 │   ├── organize_bracs_official.py
 │   ├── build_bracs_graphs.py
