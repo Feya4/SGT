@@ -5,9 +5,6 @@ Repository: https://github.com/Feya4/SGT · Archived version: https://doi.org/10
 Official PyTorch implementation of
 
 > **Structural-Morphology-Aware Graph Transformer for Fine-Grained Digital Pathology Image Classification**
-> Feidu Akmel, Xun Gong\*, Ashraf Osman Ibrahim, Gedamu Alemu, Abdalla Hadabi, Abdenacer Naouri
-> Southwest Jiaotong University · Universiti Teknologi PETRONAS · Khalifa University
-> \*Corresponding author: xgong@swjtu.edu.cn
 
 SGT classifies histopathology (and dermoscopy) images from their tissue graphs. It extends a sparse graph transformer with two components:
 
