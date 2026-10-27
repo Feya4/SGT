@@ -11,11 +11,13 @@ Equation numbers refer to the manuscript (Methods, Section 0.5):
   SGTLayer                    Eqs. (12-15) and Algorithm 1, lines 7-16
   SGT                         Eqs. (2, 16, 17)
 
-Switches (ModelConfig) — defaults implement the manuscript exactly:
-  fuse_prev_morph      True : gate/fusion use m^(l-1) (Eqs. 6-7, Alg. 1 lines 9-10).
-                       False: gate/fusion use m^(l)   (behaviour of the code before this revision).
-  drop_path_per_graph  True : stochastic depth drops a residual branch for a whole graph.
-                       False: one Bernoulli draw per NODE (behaviour before this revision).
+Implementation details not written as equations in the manuscript:
+  - dropout on the attention weights alpha and inside the FFN and classifier;
+  - stochastic depth on both residual branches, one draw per graph, rate increasing linearly
+    from 0 (first layer) to drop_path_max (last layer, default 0.15);
+  - Xavier-uniform initialisation of all linear layers, zero biases.
+
+Options (ModelConfig):
   use_mase / use_sre   ablations; False removes the morphological stream / the spatial bias.
   variant              "sgt" (default) | "concat": control without MASE in which the three morphological
                        attributes are concatenated to the node features (in_dim + 3 inputs); the SRE is kept.
@@ -40,29 +42,23 @@ class StochasticDepth(nn.Module):
     """
     Drops a whole residual branch with probability p during training (inverted scaling, identity at test time).
 
-    The input is a flat node tensor (N_total, F) of a mini-batch of graphs. With `batch` given, one Bernoulli
-    draw is made per GRAPH, so the branch is dropped for every node of that graph (stochastic depth per sample).
-    Without `batch` (or per_graph=False) one draw is made per node.
+    The input is a flat node tensor (N_total, F) of a mini-batch of graphs. One Bernoulli draw is made per
+    GRAPH (given by `batch`), so the branch is dropped for every node of that graph.
     """
 
-    def __init__(self, drop_prob: float = 0.0, per_graph: bool = True):
+    def __init__(self, drop_prob: float = 0.0):
         super().__init__()
         self.drop_prob = float(drop_prob)
-        self.per_graph = per_graph
 
-    def forward(self, x: Tensor, batch: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, batch: Tensor, num_graphs: int) -> Tensor:
         if not self.training or self.drop_prob == 0.0:
             return x
         keep = 1.0 - self.drop_prob
-        if self.per_graph and batch is not None:
-            num_graphs = int(batch.max().item()) + 1 if batch.numel() else 0
-            mask = torch.empty(num_graphs, dtype=x.dtype, device=x.device).bernoulli_(keep).div_(keep)
-            return x * mask[batch].unsqueeze(-1)
-        mask = torch.empty((x.shape[0],) + (1,) * (x.ndim - 1), dtype=x.dtype, device=x.device)
-        return x * mask.bernoulli_(keep).div_(keep)
+        mask = torch.empty(num_graphs, dtype=x.dtype, device=x.device).bernoulli_(keep).div_(keep)
+        return x * mask[batch].unsqueeze(-1)
 
     def extra_repr(self) -> str:
-        return f"p={self.drop_prob:.3f}, per_graph={self.per_graph}"
+        return f"p={self.drop_prob:.3f}"
 
 
 # ─── Eq. (4): morphological token initialisation ─────────────────────────────
@@ -122,7 +118,7 @@ class SpatialRelationshipEncoder(nn.Module):
     """
     phi_ij = 1 / (1 + ||p_i - p_j||_2^2) in (0, 1], computed per edge; returns beta * phi_ij.
 
-    p are centroid coordinates normalised to [0, 1] by the longer image side (see dataset.py).
+    p are centroid coordinates normalised to [0, 1] (see dataset.py).
     beta is ONE scalar, initialised to beta_init, shared by all layers and heads.
     """
 
@@ -183,18 +179,19 @@ class SREMultiHeadAttention(nn.Module):
 class SGTLayer(nn.Module):
     """
         m^(l)    = MASE(m^(l-1))                                               Eq. (12)
-        h_in     = h^(l-1) + sigma(W_gate [h^(l-1) || m~]) ⊙ m~                 Eq. (13)
-                   m~ = m^(l-1) (manuscript, fuse_prev_morph=True) or m^(l)
+        h_in     = h^(l-1) + sigma(W_gate [h^(l-1) || m^(l-1)]) ⊙ m^(l-1)      Eq. (13)
         h_att    = MHA_SRE(LN(h_in), beta phi)                                 Eq. (14)
         r        = h_in + DropPath(h_att)
         h^(l)    = r + DropPath(FFN(LN(r)))                                    Eq. (15)
+
+    The gate and the fusion use the previous-layer token m^(l-1); the updated token m^(l) is passed on
+    to the next layer.
     """
 
     def __init__(self, dim: int, num_heads: int, ffn_dim: int, dropout: float = 0.1,
-                 drop_path: float = 0.0, use_mase: bool = True, fuse_prev_morph: bool = True,
-                 drop_path_per_graph: bool = True):
+                 drop_path: float = 0.0, use_mase: bool = True):
         super().__init__()
-        self.use_mase, self.fuse_prev_morph = use_mase, fuse_prev_morph
+        self.use_mase = use_mase
         if use_mase:
             self.mase = MASEPropagation(dim)
             self.fusion = GatedCrossStreamFusion(dim)
@@ -203,21 +200,20 @@ class SGTLayer(nn.Module):
                                  nn.Linear(ffn_dim, dim), nn.Dropout(dropout))
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
-        self.drop_path1 = StochasticDepth(drop_path, drop_path_per_graph)
-        self.drop_path2 = StochasticDepth(drop_path, drop_path_per_graph)
+        self.drop_path1 = StochasticDepth(drop_path)
+        self.drop_path2 = StochasticDepth(drop_path)
 
     def forward(self, h: Tensor, m: Optional[Tensor], edge_index: Tensor, spatial_bias: Optional[Tensor],
-                batch: Optional[Tensor] = None, return_internals: bool = False):
+                batch: Tensor, num_graphs: int, return_internals: bool = False):
         gate, m_new = None, m
         if self.use_mase:
-            m_new = self.mase(m, edge_index)                          # Alg. 1 line 8
-            m_fuse = m if self.fuse_prev_morph else m_new
-            h_in, gate = self.fusion(h, m_fuse)                       # Alg. 1 lines 9-10
+            m_new = self.mase(m, edge_index)                          # Alg. 1 line 8,  m^(l)
+            h_in, gate = self.fusion(h, m)                            # Alg. 1 lines 9-10, uses m^(l-1)
         else:
             h_in = h
         h_att, alpha = self.attn(self.norm1(h_in), edge_index, spatial_bias, return_attn=True)
-        r = h_in + self.drop_path1(h_att, batch)                      # Alg. 1 line 15
-        h_out = r + self.drop_path2(self.ffn(self.norm2(r)), batch)   # Alg. 1 line 16
+        r = h_in + self.drop_path1(h_att, batch, num_graphs)                      # Alg. 1 line 15
+        h_out = r + self.drop_path2(self.ffn(self.norm2(r)), batch, num_graphs)   # Alg. 1 line 16
         if return_internals:
             return h_out, m_new, {"attention": alpha, "gate": gate}
         return h_out, m_new
@@ -238,8 +234,7 @@ class SGT(nn.Module):
     def __init__(self, in_dim: int = 512, hidden_dim: int = 256, num_heads: int = 8, num_layers: int = 6,
                  morph_hidden_dim: int = 64, ffn_dim: int = 512, num_classes: int = 7, dropout: float = 0.1,
                  beta_init: float = 1.0, classifier_hidden: int = 128, drop_path_max: float = 0.15,
-                 use_mase: bool = True, use_sre: bool = True, fuse_prev_morph: bool = True,
-                 drop_path_per_graph: bool = True, variant: str = "sgt"):
+                 use_mase: bool = True, use_sre: bool = True, variant: str = "sgt"):
         super().__init__()
         if variant not in ("sgt", "concat"):
             raise ValueError(f"unknown variant {variant!r}")
@@ -256,8 +251,7 @@ class SGT(nn.Module):
         # stochastic depth: linearly increasing from 0 (first layer) to drop_path_max (last layer)
         rates = [drop_path_max * i / max(num_layers - 1, 1) for i in range(num_layers)]
         self.layers = nn.ModuleList([
-            SGTLayer(hidden_dim, num_heads, ffn_dim, dropout, rates[i], use_mase, fuse_prev_morph,
-                     drop_path_per_graph) for i in range(num_layers)])
+            SGTLayer(hidden_dim, num_heads, ffn_dim, dropout, rates[i], use_mase) for i in range(num_layers)])
         self.classifier = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, classifier_hidden),
                                         nn.GELU(), nn.Dropout(dropout), nn.Linear(classifier_hidden, num_classes))
         self._init_weights()
@@ -276,6 +270,9 @@ class SGT(nn.Module):
         edge_index, batch = data.edge_index, data.batch
         if batch is None:                                           # single un-batched graph
             batch = torch.zeros(data.x.size(0), dtype=torch.long, device=data.x.device)
+            num_graphs = 1
+        else:
+            num_graphs = int(data.num_graphs)
         x = torch.cat([data.x, data.morph], dim=-1) if self.variant == "concat" else data.x
         h = self.input_proj(x)
         m = self.morph_init(data.morph) if self.use_mase else None
@@ -283,11 +280,12 @@ class SGT(nn.Module):
         attn, gates = [], []
         for layer in self.layers:
             if return_internals:
-                h, m, aux = layer(h, m, edge_index, bias, batch, return_internals=True)
+                h, m, aux = layer(h, m, edge_index, bias, batch, num_graphs, return_internals=True)
                 attn.append(aux["attention"]); gates.append(aux["gate"])
             else:
-                h, m = layer(h, m, edge_index, bias, batch)
-        logits = self.classifier(scatter_mean(h, batch, dim=0))
+                h, m = layer(h, m, edge_index, bias, batch, num_graphs)
+        h_graph = scatter_mean(h, batch, dim=0, dim_size=num_graphs)
+        logits = self.classifier(h_graph)
         return logits, attn, gates
 
     def forward(self, data: Batch) -> Tensor:
@@ -319,7 +317,6 @@ def _sgt_kwargs(cfg) -> dict:
                 morph_hidden_dim=cfg.morph_hidden_dim, ffn_dim=cfg.ffn_dim, num_classes=cfg.num_classes,
                 dropout=cfg.dropout, beta_init=cfg.beta_init, classifier_hidden=cfg.classifier_hidden_dim,
                 drop_path_max=g("drop_path_max", 0.15), use_mase=g("use_mase", True), use_sre=g("use_sre", True),
-                fuse_prev_morph=g("fuse_prev_morph", True), drop_path_per_graph=g("drop_path_per_graph", True),
                 variant=g("variant", "sgt"))
 
 
@@ -337,7 +334,7 @@ def matched_ffn_dim(cfg) -> int:
 
 
 def build_model(cfg) -> SGT:
-    """Build SGT (or the concat control) from a ModelConfig. Fields missing in old configs take defaults."""
+    """Build SGT (or the concat control) from a ModelConfig."""
     kw = _sgt_kwargs(cfg)
     if kw["variant"] == "concat" and getattr(cfg, "match_params", True):
         kw["ffn_dim"] = matched_ffn_dim(cfg)
@@ -345,7 +342,11 @@ def build_model(cfg) -> SGT:
 
 
 def infer_config_from_checkpoint(state_dict: dict, cfg) -> None:
-    """Set the architecture fields of cfg IN PLACE from the tensor shapes stored in a checkpoint."""
+    """Set the architecture fields of cfg IN PLACE from the tensor shapes stored in a checkpoint.
+
+    The number of attention heads cannot be read from the tensor shapes; cfg.num_heads is kept
+    (reduced only if it does not divide hidden_dim).
+    """
     sd = state_dict
     if "input_proj.0.weight" in sd:
         cfg.hidden_dim, cfg.in_dim = (int(s) for s in sd["input_proj.0.weight"].shape)
@@ -367,6 +368,3 @@ def infer_config_from_checkpoint(state_dict: dict, cfg) -> None:
     cfg.use_sre = "sre.beta" in sd
     while cfg.hidden_dim % cfg.num_heads != 0 and cfg.num_heads > 1:
         cfg.num_heads //= 2
-    # NOTE: fuse_prev_morph, drop_path_per_graph and the data settings cannot be read from tensor shapes.
-    # Checkpoints trained before this revision need:
-    #   model.fuse_prev_morph=false model.drop_path_per_graph=false data.bracs_pos=mm data.bracs_area=zlog
