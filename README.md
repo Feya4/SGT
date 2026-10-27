@@ -255,7 +255,6 @@ To get a DOI, push a tagged release to GitHub with the Zenodo–GitHub integrati
 | CAMELYON16 | weighted F1  |89.18 | 88.11 |
 | ISIC 2018 (lesion split) | weighted F1 | 80.57 | 75.80 |
 
-For BRACS, the SGT−CGT difference is +0.94 percentage points (95% CI 0.33–1.55, p = 0.008). Results are means over five seeds.
 
 ## Citation
 
