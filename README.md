@@ -63,30 +63,6 @@ Experiments in the paper were run on NVIDIA A40 GPUs.
 ## Data
 
 All paths are relative to the environment variable `SGT_ROOT`, which defaults to the current folder. Every path can be changed in `config/config.py` or overridden with `--set`.
-
-### BRACS (7 classes: N, PB, UDH, ADH, FEA, DCIS, IC)
-
-Download the BRACS ROI images (<https://www.bracs.icar.cnr.it/>) into `data/{train,val,test}/<class>/`, keeping the official folder structure, which defines the patient-level split. Then run:
-
-```bash
-# 1. copy existing tissue graphs into folders that follow the official split; audit slide overlap
-python preprocessing/organize_bracs_official.py --dry_run
-python preprocessing/organize_bracs_official.py        # -> data/tissue_graphs_official/, missing_graphs_*.txt
-
-# 2. build graphs for ROIs that have none (HACT pipeline: Vahadane + merged SLIC + ResNet-34 + RAG)
-python preprocessing/build_bracs_graphs.py --verify 5  # rebuild 5 existing graphs, should be identical
-python preprocessing/build_bracs_graphs.py --split test
-
-# 3. add region area and convexity (solidity) to every node
-python preprocessing/compute_morphology.py --check 5
-python preprocessing/compute_morphology.py --workers 8 # -> data/tissue_graphs_official_morph/
-```
-
-- Node features are 512-d ResNet-34 features; the two location features of the RAG builder are dropped.
-- `compute_morphology.py` checks that every region matches a graph node (same count, centroids within 2 px) and that the features are 512-dimensional. It lists any graph that fails in `morphology_problems.txt`.
-- The ROI sizes needed to normalise centroids to [0, 1] are read from the image headers once and cached in `roi_image_sizes.json`.
-- Eight training ROIs (7 UDH, 1 IC) were unavailable in our copy, so training uses 3,155 ROIs; validation (602) and test (626) are complete.
-
 ### ISIC 2018 Task 3 / HAM10000 (7 classes: MEL, NV, BCC, AKIEC, BKL, DF, VASC)
 
 ```
@@ -115,6 +91,31 @@ Each image is turned into a graph as follows:
 3. Nodes are connected in an undirected 6-nearest-neighbour graph.
 
 Graphs must be cached before training, because DataLoader workers cannot use the GPU.
+
+### BRACS (7 classes: N, PB, UDH, ADH, FEA, DCIS, IC)
+
+Download the BRACS ROI images (<https://www.bracs.icar.cnr.it/>) into `data/{train,val,test}/<class>/`, keeping the official folder structure, which defines the patient-level split. Then run:
+
+```bash
+# 1. copy existing tissue graphs into folders that follow the official split; audit slide overlap
+python preprocessing/organize_bracs_official.py --dry_run
+python preprocessing/organize_bracs_official.py        # -> data/tissue_graphs_official/, missing_graphs_*.txt
+
+# 2. build graphs for ROIs that have none (HACT pipeline: Vahadane + merged SLIC + ResNet-34 + RAG)
+python preprocessing/build_bracs_graphs.py --verify 5  # rebuild 5 existing graphs, should be identical
+python preprocessing/build_bracs_graphs.py --split test
+
+# 3. add region area and convexity (solidity) to every node
+python preprocessing/compute_morphology.py --check 5
+python preprocessing/compute_morphology.py --workers 8 # -> data/tissue_graphs_official_morph/
+```
+
+- Node features are 512-d ResNet-34 features; the two location features of the RAG builder are dropped.
+- `compute_morphology.py` checks that every region matches a graph node (same count, centroids within 2 px) and that the features are 512-dimensional. It lists any graph that fails in `morphology_problems.txt`.
+- The ROI sizes needed to normalise centroids to [0, 1] are read from the image headers once and cached in `roi_image_sizes.json`.
+- Eight training ROIs (7 UDH, 1 IC) were unavailable in our copy, so training uses 3,155 ROIs; validation (602) and test (626) are complete.
+
+
 
 ### CAMELYON16 (2 classes: normal, tumor)
 
